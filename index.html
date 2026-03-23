@@ -25,7 +25,9 @@
     <header class="glass sticky top-0 z-50 border-b px-6 py-4 flex justify-between items-center">
         <div>
             <h1 class="text-xl font-extrabold tracking-tight text-indigo-600">PicToPDF</h1>
-            <p class="text-[9px] text-slate-400 font-mono leading-none">BUILD: 8f2a1c</p>
+            <p class="text-[9px] text-slate-400 font-mono leading-none">
+                REV: {{ site.github.build_revision | slice: 0, 7 }}
+            </p>
         </div>
         <button onclick="togglePreview()" class="text-sm font-bold text-indigo-600 bg-indigo-50 px-4 py-1.5 rounded-full btn-active">Live Preview</button>
     </header>
@@ -36,18 +38,18 @@
             <div class="bg-white border-2 border-dashed border-slate-300 rounded-3xl p-10 text-center transition-all shadow-sm">
                 <div class="text-5xl mb-3">🖼️</div>
                 <span class="text-slate-700 font-bold text-lg">Add Photos</span>
-                <p class="text-slate-400 text-xs mt-1">Select from Gallery</p>
+                <p class="text-slate-400 text-xs mt-1">Select from Apple Gallery</p>
             </div>
         </div>
 
-        <section id="settings-area" class="hidden bg-white rounded-3xl p-6 shadow-sm border border-slate-200 space-y-5">
+        <section id="settings-area" class="hidden bg-white rounded-3xl p-6 shadow-sm border border-slate-200 animate-in fade-in slide-in-from-bottom-4 duration-500">
             <div class="grid grid-cols-2 gap-4">
                 <div class="space-y-1">
-                    <label class="text-[10px] font-black text-slate-400 uppercase">Scale Mode</label>
-                    <select id="setting-fit" class="w-full bg-slate-50 rounded-xl p-3 text-sm font-bold outline-none" onchange="renderLivePreview()">
-                        <option value="contain">Original Aspect</option>
-                        <option value="stretch">Stretch to Fit</option>
-                        <option value="cover">Fill Page (Crop)</option>
+                    <label class="text-[10px] font-black text-slate-400 uppercase">Image Scaling</label>
+                    <select id="setting-fit" class="w-full bg-slate-50 rounded-xl p-3 text-sm font-bold border-none" onchange="renderLivePreview()">
+                        <option value="contain">Keep Proportions</option>
+                        <option value="stretch">Stretch to Page</option>
+                        <option value="cover">Crop to Fill</option>
                     </select>
                 </div>
                 <div class="space-y-1">
@@ -71,21 +73,21 @@
     <footer id="action-bar" class="hidden fixed bottom-0 left-0 right-0 glass border-t p-6 pb-10 z-50">
         <div class="max-w-2xl mx-auto flex items-center justify-between">
             <div class="flex flex-col">
-                <p id="stats" class="text-sm font-black text-slate-800 tracking-tighter">0 PHOTOS</p>
+                <p id="stats" class="text-sm font-black text-slate-800 tracking-tighter uppercase">0 Photos Selected</p>
                 <div id="offline-indicator" class="hidden flex items-center gap-1">
                     <div class="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
                     <span class="text-[10px] text-slate-500 font-bold uppercase tracking-widest">Offline Ready</span>
                 </div>
             </div>
-            <button id="convert-btn" onclick="generateAndSharePDF()" class="bg-indigo-600 text-white px-10 py-4 rounded-2xl font-black shadow-xl btn-active flex items-center gap-3">
-                <span>EXPORT</span>
+            <button id="convert-btn" onclick="exportPDF()" class="bg-indigo-600 text-white px-10 py-4 rounded-2xl font-black shadow-xl btn-active flex items-center gap-3">
+                <span id="btn-text">EXPORT PDF</span>
                 <div id="loader" class="hidden border-2 border-white/30 border-t-white h-4 w-4 rounded-full animate-spin"></div>
             </button>
         </div>
     </footer>
 
     <script>
-        // PWA Offline Check
+        // Check for Service Worker (PWA Status)
         if ('serviceWorker' in navigator) {
             navigator.serviceWorker.getRegistration().then(reg => {
                 if(reg) document.getElementById('offline-indicator').classList.remove('hidden');
@@ -109,6 +111,7 @@
             updateUI();
         };
 
+        // Canvas processing for rotation/EXIF correction
         async function processImage(file) {
             return new Promise(resolve => {
                 const reader = new FileReader();
@@ -140,7 +143,7 @@
             const hasData = images.length > 0;
             document.getElementById('settings-area').classList.toggle('hidden', !hasData);
             document.getElementById('action-bar').classList.toggle('hidden', !hasData);
-            document.getElementById('stats').innerText = `${images.length} PHOTOS`;
+            document.getElementById('stats').innerText = `${images.length} Photos Selected`;
         }
 
         function removeImg(i) { images.splice(i, 1); updateUI(); }
@@ -164,7 +167,7 @@
             images.forEach((img) => {
                 const page = document.createElement('div');
                 page.className = "bg-white shadow-2xl relative shrink-0 rounded-sm";
-                page.style.width = "280px"; page.style.height = "396px"; // Visual A4 ratio
+                page.style.width = "280px"; page.style.height = "396px"; 
                 
                 const inner = document.createElement('img');
                 inner.src = img.dataUrl;
@@ -183,14 +186,16 @@
             });
         }
 
-        async function generateAndSharePDF() {
+        async function exportPDF() {
             const btn = document.getElementById('convert-btn');
             const loader = document.getElementById('loader');
+            const btnText = document.getElementById('btn-text');
             const fit = document.getElementById('setting-fit').value;
             const margin = parseInt(document.getElementById('setting-margin').value);
 
             btn.disabled = true; 
             loader.classList.remove('hidden');
+            btnText.innerText = "PROCESSING";
 
             const doc = new jsPDF();
             for (let i = 0; i < images.length; i++) {
@@ -210,26 +215,29 @@
             }
 
             const fileName = `Export_${Date.now()}.pdf`;
-            const blob = doc.output('blob');
-            const file = new File([blob], fileName, { type: 'application/pdf' });
+            const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
 
-            // Using the Web Share API to bypass the "Blob Link" issue
-            if (navigator.canShare && navigator.canShare({ files: [file] })) {
+            if (isMobile && navigator.canShare && navigator.share) {
+                // Mobile Path: Native Share Sheet
                 try {
+                    const blob = doc.output('blob');
+                    const file = new File([blob], fileName, { type: 'application/pdf' });
                     await navigator.share({
                         files: [file],
                         title: 'PDF Export',
                     });
                 } catch (err) {
-                    console.log("Share cancelled or failed");
+                    console.log("Share failed, falling back to download");
+                    doc.save(fileName);
                 }
             } else {
-                // Fallback for older browsers
+                // Desktop Path: Standard Download
                 doc.save(fileName);
             }
 
             btn.disabled = false; 
             loader.classList.add('hidden');
+            btnText.innerText = "EXPORT PDF";
         }
     </script>
 </body>
