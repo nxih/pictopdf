@@ -32,6 +32,37 @@
         /* Cropper Custom Theme */
         .cropper-view-box, .cropper-face { border-radius: 4px; }
         .cropper-line, .cropper-point { background-color: #4f46e5; }
+
+        /* Premium Drag & Drop Reordering Styles */
+        .grid-item-card {
+            touch-action: pan-y; /* Allow vertical scroll, but capture press-and-hold */
+            -webkit-touch-callout: none; /* Prevent iOS native image menu */
+            user-select: none;
+            -webkit-user-select: none;
+        }
+        .sortable-chosen {
+            transform: scale(1.05);
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.15), 0 8px 10px -6px rgba(0, 0, 0, 0.1);
+            z-index: 50;
+            border-color: #4f46e5;
+            transition: transform 0.2s cubic-bezier(0.2, 0, 0, 1), box-shadow 0.2s ease;
+        }
+        .sortable-ghost {
+            opacity: 0.5;
+            background-color: #e0e7ff !important; /* indigo-100 */
+            border: 2px dashed #4f46e5 !important; /* indigo-600 */
+            transform: scale(0.95);
+            border-radius: 1rem;
+        }
+        .sortable-ghost img, .sortable-ghost div, .sortable-ghost button {
+            opacity: 0 !important; /* Hide content in the placeholder drop zone */
+        }
+        .sortable-fallback {
+            opacity: 0.95 !important;
+            cursor: grabbing !important;
+            border-radius: 1rem;
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.35);
+        }
     </style>
 </head>
 <body class="bg-[#F2F2F7] font-sans text-slate-900 min-h-screen selection:bg-indigo-100">
@@ -46,7 +77,6 @@
                 BUILD: <span id="build-hash" class="text-slate-500">LOADING...</span>
             </p>
         </div>
-        <!-- Status indicator -->
         <div id="offline-indicator" class="hidden flex items-center gap-1.5 bg-green-50 px-3 py-1.5 rounded-full">
             <div class="w-2 h-2 bg-green-500 rounded-full animate-pulse shadow-[0_0_8px_rgba(34,197,94,0.6)]"></div>
             <span class="text-[9px] text-green-700 font-bold uppercase tracking-widest">Ready</span>
@@ -120,8 +150,6 @@
 
     <!-- Live Preview & Export Modal -->
     <div id="preview-modal" class="fixed inset-0 z-[60] bg-slate-900 hidden flex-col translate-y-full transition-transform duration-300 ease-in-out">
-        
-        <!-- Preview Header -->
         <div class="shrink-0 pt-[max(env(safe-area-inset-top),1rem)] pb-4 px-6 flex justify-between items-center text-white border-b border-white/10 glass-dark">
             <button onclick="closePreview()" class="text-sm font-bold text-slate-300 active:opacity-70 p-2 -ml-2 flex items-center gap-1">
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path></svg>
@@ -131,15 +159,11 @@
                 <h2 class="font-bold text-lg tracking-tight">PDF Preview</h2>
                 <span class="text-[9px] text-indigo-300 font-bold uppercase tracking-widest bg-indigo-900/50 px-2 py-0.5 rounded mt-0.5">Draft Layout</span>
             </div>
-            <div class="w-12"></div> <!-- Spacer for centering -->
+            <div class="w-12"></div>
         </div>
         
-        <!-- Preview Scroll Area -->
-        <div id="preview-scroll" class="flex-1 overflow-y-auto p-8 space-y-10 flex flex-col items-center no-scrollbar relative">
-            <!-- Pages rendered here dynamically -->
-        </div>
+        <div id="preview-scroll" class="flex-1 overflow-y-auto p-8 space-y-10 flex flex-col items-center no-scrollbar relative"></div>
 
-        <!-- Preview Footer Actions -->
         <div class="shrink-0 pb-[max(env(safe-area-inset-bottom),1.5rem)] pt-4 px-6 border-t border-white/10 glass-dark">
             <button id="modal-export-btn" onclick="generateAndSharePDF()" class="bg-indigo-600 hover:bg-indigo-500 text-white w-full py-4 rounded-2xl font-black shadow-xl shadow-indigo-600/20 active:scale-[0.98] transition-all flex justify-center items-center gap-3 text-lg">
                 <span id="export-btn-text">SAVE PDF</span>
@@ -153,7 +177,7 @@
         <div class="max-w-2xl mx-auto flex items-center justify-between">
             <div class="flex flex-col">
                 <p id="stats" class="text-base font-black text-slate-800 tracking-tighter">0 PHOTOS</p>
-                <p class="text-[10px] text-slate-500 font-bold uppercase tracking-widest mt-0.5">Ready for review</p>
+                <p id="stats-subtext" class="text-[10px] text-slate-500 font-bold uppercase tracking-widest mt-0.5 transition-colors">Ready for review</p>
             </div>
             
             <button id="preview-flow-btn" onclick="openPreview()" class="bg-indigo-600 text-white px-7 py-4 rounded-2xl font-black shadow-xl shadow-indigo-600/20 btn-active flex items-center gap-2 transition-colors hover:bg-indigo-700">
@@ -170,18 +194,12 @@
                 .then(response => response.json())
                 .then(data => {
                     const hashEl = document.getElementById('build-hash');
-                    if (data && data.sha) {
-                        hashEl.innerText = data.sha.substring(0, 7);
-                    } else {
-                        hashEl.innerText = 'UNKNOWN';
-                    }
+                    if (data && data.sha) hashEl.innerText = data.sha.substring(0, 7);
+                    else hashEl.innerText = 'UNKNOWN';
                 })
-                .catch(() => {
-                    document.getElementById('build-hash').innerText = 'LOCAL';
-                });
+                .catch(() => document.getElementById('build-hash').innerText = 'LOCAL');
         });
 
-        // --- PWA Offline Check ---
         if ('serviceWorker' in navigator) {
             navigator.serviceWorker.getRegistration().then(reg => {
                 if(reg) document.getElementById('offline-indicator').classList.remove('hidden');
@@ -190,7 +208,6 @@
 
         const { jsPDF } = window.jspdf;
         
-        // --- State Management ---
         let images = [];
         let cropQueue =[];
         let totalCropItems = 0;
@@ -199,33 +216,33 @@
         let cropperInstance = null;
         let sortableInstance = null;
 
-        // --- Check if user is on Desktop ---
-        // Media query verifies hover capability and fine pointer (mouse) OR large screen width
         const isDesktop = window.matchMedia("(min-width: 1024px) or ((hover: hover) and (pointer: fine))").matches;
 
-        // Dynamic Export button text based on device
         document.addEventListener("DOMContentLoaded", () => {
-            if (isDesktop) {
-                document.getElementById('export-btn-text').innerText = "DOWNLOAD PDF";
-            }
+            if (isDesktop) document.getElementById('export-btn-text').innerText = "DOWNLOAD PDF";
         });
 
-        // --- DOM Elements ---
         const input = document.getElementById('image-input');
         const grid = document.getElementById('preview-grid');
         const modalPreview = document.getElementById('preview-modal');
         const scrollContainer = document.getElementById('preview-scroll');
         const modalCrop = document.getElementById('crop-modal');
 
-        // --- Init Sortable.js for Drag and Drop Reordering ---
+        // --- Init Premium Mobile Drag & Drop ---
         document.addEventListener("DOMContentLoaded", () => {
             sortableInstance = new Sortable(grid, {
-                handle: '.sort-handle',
                 animation: 250,
-                easing: "cubic-bezier(0.25, 1, 0.5, 1)",
-                ghostClass: 'opacity-30',
-                delay: 100, 
+                easing: "cubic-bezier(0.2, 0, 0, 1)",
+                delay: 200, // Important: 200ms delay requires intent, allowing normal page scroll on mobile
                 delayOnTouchOnly: true,
+                touchStartThreshold: 5,
+                ghostClass: 'sortable-ghost',
+                chosenClass: 'sortable-chosen',
+                forceFallback: true, // Overrides the native OS drag image for complete styling control
+                fallbackClass: 'sortable-fallback',
+                fallbackOnBody: true,
+                filter: '.no-drag', // Do not pick up the item if they click the remove button
+                preventOnFilter: false,
                 onEnd: function (evt) {
                     if (evt.oldIndex === evt.newIndex) return;
                     const item = images.splice(evt.oldIndex, 1)[0];
@@ -235,7 +252,6 @@
             });
         });
 
-        // --- File Interception & Crop Flow ---
         input.onchange = (e) => {
             const files = Array.from(e.target.files);
             if (!files.length) return;
@@ -244,7 +260,6 @@
             totalCropItems = files.length;
             currentCropIndex = 1;
             e.target.value = ''; 
-            
             processNextCrop();
         };
 
@@ -255,8 +270,6 @@
                 return;
             }
             currentOriginalFile = cropQueue.shift();
-            
-            // Update Text
             document.getElementById('crop-title').innerText = `Crop (${currentCropIndex}/${totalCropItems})`;
             document.getElementById('crop-btn-text').innerText = cropQueue.length > 0 ? 'Crop & Next' : 'Crop & Done';
 
@@ -265,7 +278,6 @@
                 openCropModal();
                 const imageEl = document.getElementById('crop-image');
                 imageEl.src = e.target.result;
-                
                 if (cropperInstance) cropperInstance.destroy();
                 
                 setTimeout(() => {
@@ -317,18 +329,10 @@
         async function confirmCrop() {
             if (!cropperInstance) return;
             showCropLoading(true);
-            
             await new Promise(r => setTimeout(r, 50));
-
-            const canvas = cropperInstance.getCroppedCanvas({
-                maxWidth: 2048,
-                maxHeight: 2048,
-                fillColor: '#fff' 
-            });
-            
+            const canvas = cropperInstance.getCroppedCanvas({ maxWidth: 2048, maxHeight: 2048, fillColor: '#fff' });
             const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
             images.push({ dataUrl, w: canvas.width, h: canvas.height });
-            
             currentCropIndex++;
             showCropLoading(false);
             processNextCrop();
@@ -337,16 +341,10 @@
         function showCropLoading(show) {
             const btn = document.getElementById('crop-btn');
             const loader = document.getElementById('crop-loader');
-            if (show) {
-                btn.disabled = true;
-                loader.classList.remove('hidden');
-            } else {
-                btn.disabled = false;
-                loader.classList.add('hidden');
-            }
+            if (show) { btn.disabled = true; loader.classList.remove('hidden'); } 
+            else { btn.disabled = false; loader.classList.add('hidden'); }
         }
 
-        // --- Core Image Processing ---
         async function processImage(file) {
             return new Promise((resolve, reject) => {
                 const reader = new FileReader();
@@ -354,8 +352,7 @@
                     const img = new Image();
                     img.onload = () => {
                         const MAX_SIZE = 2048; 
-                        let w = img.width;
-                        let h = img.height;
+                        let w = img.width; let h = img.height;
                         if (w > MAX_SIZE || h > MAX_SIZE) {
                             if (w > h) { h = Math.round((h * MAX_SIZE) / w); w = MAX_SIZE; } 
                             else { w = Math.round((w * MAX_SIZE) / h); h = MAX_SIZE; }
@@ -363,11 +360,8 @@
                         const canvas = document.createElement('canvas');
                         canvas.width = w; canvas.height = h;
                         const ctx = canvas.getContext('2d');
-                        
-                        ctx.fillStyle = "#fff";
-                        ctx.fillRect(0, 0, w, h);
+                        ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, w, h);
                         ctx.drawImage(img, 0, 0, w, h);
-                        
                         resolve({ dataUrl: canvas.toDataURL('image/jpeg', 0.85), w, h });
                     };
                     img.onerror = reject;
@@ -383,19 +377,17 @@
             grid.innerHTML = '';
             images.forEach((img, i) => {
                 const div = document.createElement('div');
-                div.className = "relative aspect-square bg-slate-100 rounded-2xl overflow-hidden shadow-sm border border-slate-200 group animate-in fade-in zoom-in duration-300";
+                // Removed specific tiny handle. The entire card is now the draggable target.
+                div.className = "grid-item-card relative aspect-square bg-slate-100 rounded-2xl overflow-hidden shadow-sm border border-slate-200 cursor-grab active:cursor-grabbing group animate-in fade-in zoom-in duration-300";
+                
                 div.innerHTML = `
-                    <img src="${img.dataUrl}" class="w-full h-full object-cover pointer-events-none select-none">
+                    <img src="${img.dataUrl}" draggable="false" class="w-full h-full object-cover pointer-events-none select-none">
                     
                     <div class="absolute top-2 left-2 bg-black/60 backdrop-blur-md text-white rounded-md px-2 py-0.5 text-[11px] font-black pointer-events-none select-none shadow-sm z-10">
                         ${i + 1}
                     </div>
                     
-                    <button onclick="removeImg(${i})" class="absolute top-2 right-2 bg-black/60 hover:bg-red-500 transition-colors text-white rounded-full w-8 h-8 flex items-center justify-center text-sm backdrop-blur-md btn-active shadow-sm z-20">✕</button>
-                    
-                    <div class="absolute bottom-2 right-2 bg-indigo-600/90 backdrop-blur-md text-white rounded-full w-8 h-8 flex items-center justify-center cursor-grab sort-handle active:cursor-grabbing shadow-md z-20 transition-transform hover:scale-105">
-                        <svg class="w-4 h-4 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M4 8h16M4 16h16"></path></svg>
-                    </div>
+                    <button onclick="removeImg(${i})" class="no-drag absolute top-2 right-2 bg-black/60 hover:bg-red-500 transition-colors text-white rounded-full w-8 h-8 flex items-center justify-center text-sm backdrop-blur-md shadow-sm z-20 active:scale-90">✕</button>
                 `;
                 grid.appendChild(div);
             });
@@ -404,6 +396,18 @@
             document.getElementById('settings-area').classList.toggle('hidden', !hasData);
             document.getElementById('action-bar').classList.toggle('hidden', !hasData);
             document.getElementById('stats').innerText = `${images.length} PHOTO${images.length !== 1 ? 'S' : ''}`;
+
+            // Contextual Drag Hint logic
+            const subtext = document.getElementById('stats-subtext');
+            if (images.length > 1) {
+                subtext.innerText = "Press & hold photo to reorder";
+                subtext.classList.add('text-indigo-600');
+                subtext.classList.remove('text-slate-500');
+            } else {
+                subtext.innerText = "Ready for review";
+                subtext.classList.remove('text-indigo-600');
+                subtext.classList.add('text-slate-500');
+            }
         }
 
         function removeImg(i) { 
@@ -411,11 +415,9 @@
             updateUI(); 
         }
 
-        // --- Open/Close Preview Flow ---
         function openPreview() {
             modalPreview.classList.remove('hidden');
             modalPreview.classList.add('flex');
-            // Slight delay so the transition triggers after display block is applied
             setTimeout(() => modalPreview.classList.remove('translate-y-full'), 10);
             document.body.style.overflow = 'hidden';
             renderLivePreview();
@@ -444,13 +446,13 @@
                 const page = document.createElement('div');
                 page.className = "bg-white shadow-2xl relative shrink-0 rounded-sm overflow-hidden";
                 page.style.width = "280px"; 
-                page.style.height = "396px"; // Standard A4 visual ratio
+                page.style.height = "396px"; 
                 
                 const inner = document.createElement('img');
                 inner.src = img.dataUrl;
                 inner.style.position = "absolute";
                 
-                const pMargin = (margin * 1.3) + "px"; // Visual scale adaptation
+                const pMargin = (margin * 1.3) + "px"; 
                 inner.style.top = inner.style.left = inner.style.right = inner.style.bottom = pMargin;
                 inner.style.width = `calc(100% - ${(margin*2)*1.3}px)`;
                 inner.style.height = `calc(100% - ${(margin*2)*1.3}px)`;
@@ -461,7 +463,6 @@
 
                 page.appendChild(inner);
                 
-                // Add page number hint to preview
                 const pageNum = document.createElement('div');
                 pageNum.className = "absolute bottom-[-30px] w-full text-center text-slate-500 font-bold text-xs tracking-widest";
                 pageNum.innerText = `PAGE ${index + 1}`;
@@ -471,7 +472,6 @@
             });
         }
 
-        // --- PDF Generation & Export from within Modal ---
         async function generateAndSharePDF() {
             const btn = document.getElementById('modal-export-btn');
             const loader = document.getElementById('modal-loader');
@@ -480,8 +480,6 @@
 
             btn.disabled = true; 
             loader.classList.remove('hidden');
-            
-            // Allow loader to render
             await new Promise(r => setTimeout(r, 50));
 
             try {
@@ -497,7 +495,6 @@
 
                     let dW = aW, dH = (img.h * aW) / img.w;
                     
-                    // Scale Modes
                     if (fit === 'contain' && dH > aH) { dH = aH; dW = (img.w * aH) / img.h; }
                     if (fit === 'stretch') { dW = aW; dH = aH; }
                     if (fit === 'cover' && dH < aH) { dH = aH; dW = (img.w * aH) / img.h; }
@@ -509,24 +506,18 @@
                 const blob = doc.output('blob');
                 const file = new File([blob], fileName, { type: 'application/pdf' });
 
-                // Check Desktop explicitly first
                 if (isDesktop) {
                     doc.save(fileName);
                     closePreview();
                 } else {
-                    // Mobile/Tablet Flow
                     if (navigator.canShare && navigator.canShare({ files: [file] })) {
                         try {
-                            await navigator.share({
-                                files: [file],
-                                title: 'PDF Export',
-                            });
-                            closePreview(); // Successfully shared
+                            await navigator.share({ files: [file], title: 'PDF Export' });
+                            closePreview(); 
                         } catch (err) {
                             console.log("Share cancelled or failed");
                         }
                     } else {
-                        // Fallback
                         doc.save(fileName);
                     }
                 }
