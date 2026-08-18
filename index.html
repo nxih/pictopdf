@@ -196,7 +196,7 @@
         <div class="shrink-0 pb-[max(env(safe-area-inset-bottom),1.25rem)] pt-4 px-5 sm:px-6 border-t border-white/10 glass-dark space-y-4">
             <div class="space-y-2">
                 <div class="flex items-center justify-between text-white">
-                    <button id="straighten-reset-btn" type="button" onclick="resetStraighten()" class="text-xs font-black uppercase tracking-widest text-slate-300 active:opacity-70 px-2 py-2 -ml-2">Reset</button>
+                    <button id="straighten-reset-btn" type="button" onclick="resetPhotoEdits()" class="text-xs font-black uppercase tracking-widest text-slate-300 active:opacity-70 px-2 py-2 -ml-2">Reset</button>
                     <div class="flex flex-col items-center leading-none">
                         <span class="text-[10px] font-black uppercase tracking-[0.22em] text-slate-400">Straighten</span>
                         <span id="straighten-val" class="text-lg font-black tabular-nums mt-1">0.0&deg;</span>
@@ -300,6 +300,7 @@
         let isSorting = false;
 
         const MAX_IMAGE_SIZE = 2048;
+        const STRAIGHTEN_SNAP_DEGREES = 0.5;
 
         const isDesktop = window.matchMedia("(min-width: 1024px) or ((hover: hover) and (pointer: fine))").matches;
 
@@ -581,8 +582,11 @@
             setStraightenAngle(value, true);
         }
 
-        function resetStraighten() {
-            setStraightenAngle(0, true);
+        async function resetPhotoEdits() {
+            currentRotateDegrees = 0;
+            pendingCropData = null;
+            setStraightenAngle(0, false);
+            await loadCropperForCurrentState({ restoreCropData: false });
         }
 
         async function rotateImage() {
@@ -593,7 +597,8 @@
         }
 
         function setStraightenAngle(value, syncCropper) {
-            const nextAngle = Math.max(-45, Math.min(45, parseFloat(value) || 0));
+            let nextAngle = Math.max(-45, Math.min(45, parseFloat(value) || 0));
+            if (Math.abs(nextAngle) <= STRAIGHTEN_SNAP_DEGREES) nextAngle = 0;
             currentStraightenAngle = nextAngle;
             document.getElementById('straighten-slider').value = nextAngle.toFixed(1);
             document.getElementById('straighten-val').innerText = `${nextAngle.toFixed(1)}\u00B0`;
