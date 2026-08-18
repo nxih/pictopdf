@@ -32,6 +32,44 @@
         /* Cropper Custom Theme */
         .cropper-view-box, .cropper-face { border-radius: 4px; }
         .cropper-line, .cropper-point { background-color: #4f46e5; }
+        .straighten-track {
+            height: 42px;
+            background:
+                repeating-linear-gradient(
+                    90deg,
+                    rgba(255,255,255,0.22) 0,
+                    rgba(255,255,255,0.22) 1px,
+                    transparent 1px,
+                    transparent calc(100% / 30)
+                );
+            mask-image: linear-gradient(90deg, transparent, black 14%, black 86%, transparent);
+            -webkit-mask-image: linear-gradient(90deg, transparent, black 14%, black 86%, transparent);
+        }
+        .straighten-slider {
+            appearance: none;
+            -webkit-appearance: none;
+            background: transparent;
+            touch-action: pan-x;
+        }
+        .straighten-slider::-webkit-slider-thumb {
+            appearance: none;
+            -webkit-appearance: none;
+            width: 4px;
+            height: 46px;
+            border-radius: 999px;
+            background: #fff;
+            box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.25), 0 10px 24px rgba(0,0,0,0.35);
+        }
+        .straighten-slider::-moz-range-thumb {
+            width: 4px;
+            height: 46px;
+            border: 0;
+            border-radius: 999px;
+            background: #fff;
+            box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.25), 0 10px 24px rgba(0,0,0,0.35);
+        }
+        .straighten-slider::-webkit-slider-runnable-track { height: 46px; }
+        .straighten-slider::-moz-range-track { height: 46px; background: transparent; }
 
         /* Premium Drag & Drop Reordering Styles */
         .grid-item-card {
@@ -131,16 +169,31 @@
     <!-- Crop Modal -->
     <div id="crop-modal" class="fixed inset-0 z-[70] bg-black hidden flex-col transition-opacity duration-300">
         <div class="pt-[max(env(safe-area-inset-top),1rem)] pb-4 px-6 flex justify-between items-center text-white border-b border-white/10 glass-dark">
-            <button onclick="cancelCropQueue()" class="text-sm font-bold text-red-400 active:opacity-70 transition-opacity p-2 -ml-2">Cancel</button>
+            <button id="crop-cancel-btn" onclick="cancelCropQueue()" class="text-sm font-bold text-red-400 active:opacity-70 transition-opacity p-2 -ml-2">Cancel</button>
             <h2 id="crop-title" class="font-bold text-lg tracking-tight">Crop Photo</h2>
-            <button onclick="skipCrop()" class="text-sm font-bold text-slate-300 active:opacity-70 transition-opacity p-2 -mr-2">Skip</button>
+            <button id="crop-skip-btn" onclick="skipCrop()" class="text-sm font-bold text-slate-300 active:opacity-70 transition-opacity p-2 -mr-2">Skip</button>
         </div>
         
-        <div class="flex-grow relative bg-black overflow-hidden w-full h-full flex items-center justify-center">
+        <div class="flex-1 min-h-0 relative bg-black overflow-hidden w-full flex items-center justify-center">
             <img id="crop-image" class="block max-w-full" src="">
         </div>
 
-        <div class="pb-[max(env(safe-area-inset-bottom),2rem)] pt-6 px-6 border-t border-white/10 flex justify-center glass-dark">
+        <div class="shrink-0 pb-[max(env(safe-area-inset-bottom),1.25rem)] pt-4 px-5 sm:px-6 border-t border-white/10 glass-dark space-y-4">
+            <div class="space-y-2">
+                <div class="flex items-center justify-between text-white">
+                    <button id="straighten-reset-btn" type="button" onclick="resetStraighten()" class="text-xs font-black uppercase tracking-widest text-slate-300 active:opacity-70 px-2 py-2 -ml-2">Reset</button>
+                    <div class="flex flex-col items-center leading-none">
+                        <span class="text-[10px] font-black uppercase tracking-[0.22em] text-slate-400">Straighten</span>
+                        <span id="straighten-val" class="text-lg font-black tabular-nums mt-1">0.0&deg;</span>
+                    </div>
+                    <div class="w-12"></div>
+                </div>
+                <div class="relative h-12 flex items-center">
+                    <div class="straighten-track absolute inset-x-0 top-1/2 -translate-y-1/2"></div>
+                    <div class="absolute left-1/2 top-0 bottom-0 w-px bg-indigo-400/90 shadow-[0_0_14px_rgba(129,140,248,0.9)] pointer-events-none"></div>
+                    <input type="range" id="straighten-slider" min="-45" max="45" step="0.1" value="0" oninput="handleStraightenInput(this.value)" class="straighten-slider relative z-10 w-full h-12">
+                </div>
+            </div>
             <button id="crop-btn" onclick="confirmCrop()" class="bg-indigo-600 hover:bg-indigo-500 text-white w-full py-4 rounded-2xl font-black shadow-xl btn-active flex justify-center items-center gap-2 text-lg transition-colors">
                 <span id="crop-btn-text">Crop & Next</span>
                 <div id="crop-loader" class="hidden border-2 border-white/30 border-t-white h-5 w-5 rounded-full animate-spin"></div>
@@ -209,12 +262,21 @@
         const { jsPDF } = window.jspdf;
         
         let images = [];
-        let cropQueue =[];
+        let cropQueue = [];
         let totalCropItems = 0;
         let currentCropIndex = 0;
         let currentOriginalFile = null;
+        let currentOriginalDataUrl = '';
+        let currentOriginalName = '';
+        let currentEditorMode = 'add';
+        let editingImageIndex = -1;
+        let currentStraightenAngle = 0;
+        let pendingCropData = null;
         let cropperInstance = null;
         let sortableInstance = null;
+        let isSorting = false;
+
+        const MAX_IMAGE_SIZE = 2048;
 
         const isDesktop = window.matchMedia("(min-width: 1024px) or ((hover: hover) and (pointer: fine))").matches;
 
@@ -243,11 +305,16 @@
                 fallbackOnBody: true,
                 filter: '.no-drag', // Do not pick up the item if they click the remove button
                 preventOnFilter: false,
+                onStart: function () {
+                    isSorting = true;
+                },
                 onEnd: function (evt) {
-                    if (evt.oldIndex === evt.newIndex) return;
-                    const item = images.splice(evt.oldIndex, 1)[0];
-                    images.splice(evt.newIndex, 0, item);
-                    setTimeout(updateUI, 0); 
+                    if (evt.oldIndex !== evt.newIndex) {
+                        const item = images.splice(evt.oldIndex, 1)[0];
+                        images.splice(evt.newIndex, 0, item);
+                        setTimeout(updateUI, 0);
+                    }
+                    setTimeout(() => { isSorting = false; }, 120);
                 }
             });
         });
@@ -263,39 +330,90 @@
             processNextCrop();
         };
 
-        function processNextCrop() {
+        async function processNextCrop() {
             if (cropQueue.length === 0) {
                 closeCropModal();
                 updateUI();
                 return;
             }
-            currentOriginalFile = cropQueue.shift();
-            document.getElementById('crop-title').innerText = `Crop (${currentCropIndex}/${totalCropItems})`;
-            document.getElementById('crop-btn-text').innerText = cropQueue.length > 0 ? 'Crop & Next' : 'Crop & Done';
 
-            const reader = new FileReader();
-            reader.onload = (e) => {
-                openCropModal();
-                const imageEl = document.getElementById('crop-image');
-                imageEl.src = e.target.result;
-                if (cropperInstance) cropperInstance.destroy();
-                
-                setTimeout(() => {
-                    cropperInstance = new Cropper(imageEl, {
-                        viewMode: 1,
-                        dragMode: 'move',
-                        autoCropArea: 0.9,
-                        restore: false,
-                        guides: true,
-                        center: true,
-                        highlight: false,
-                        cropBoxMovable: true,
-                        cropBoxResizable: true,
-                        toggleDragModeOnDblclick: false,
-                    });
-                }, 100);
+            currentOriginalFile = cropQueue.shift();
+            try {
+                const sourceDataUrl = await readFileAsDataUrl(currentOriginalFile);
+                openImageEditor({
+                    mode: 'add',
+                    sourceDataUrl,
+                    originalName: currentOriginalFile.name || '',
+                    title: `Crop (${currentCropIndex}/${totalCropItems})`,
+                    confirmText: cropQueue.length > 0 ? 'Crop & Next' : 'Crop & Done',
+                    cropData: null,
+                    straighten: 0
+                });
+            } catch (error) {
+                console.error("Image Load Error", error);
+                alert("Could not load that photo.");
+                currentCropIndex++;
+                processNextCrop();
+            }
+        }
+
+        function openImageEditor({ mode, sourceDataUrl, originalName, title, confirmText, cropData, straighten, index = -1 }) {
+            currentEditorMode = mode;
+            editingImageIndex = index;
+            currentOriginalDataUrl = sourceDataUrl;
+            currentOriginalName = originalName || '';
+            pendingCropData = cropData || null;
+
+            document.getElementById('crop-title').innerText = title;
+            document.getElementById('crop-btn-text').innerText = confirmText;
+            document.getElementById('crop-skip-btn').classList.toggle('invisible', mode === 'edit');
+            setStraightenAngle(straighten || 0, false);
+
+            openCropModal();
+
+            const imageEl = document.getElementById('crop-image');
+            if (cropperInstance) cropperInstance.destroy();
+            cropperInstance = null;
+
+            imageEl.onload = () => {
+                cropperInstance = new Cropper(imageEl, {
+                    viewMode: 1,
+                    dragMode: 'move',
+                    autoCropArea: 0.9,
+                    restore: false,
+                    guides: true,
+                    center: true,
+                    highlight: false,
+                    cropBoxMovable: true,
+                    cropBoxResizable: true,
+                    toggleDragModeOnDblclick: false,
+                    ready() {
+                        if (currentStraightenAngle) cropperInstance.rotateTo(currentStraightenAngle);
+                        if (pendingCropData) {
+                            setTimeout(() => {
+                                if (cropperInstance) cropperInstance.setData(pendingCropData);
+                            }, 80);
+                        }
+                    }
+                });
             };
-            reader.readAsDataURL(currentOriginalFile);
+            imageEl.removeAttribute('src');
+            imageEl.src = sourceDataUrl;
+        }
+
+        function editImg(i) {
+            if (isSorting || !images[i]) return;
+            const img = images[i];
+            openImageEditor({
+                mode: 'edit',
+                sourceDataUrl: img.originalDataUrl || img.dataUrl,
+                originalName: img.originalName || '',
+                title: `Edit Photo ${i + 1}`,
+                confirmText: 'Update Photo',
+                cropData: img.edit ? img.edit.cropData : null,
+                straighten: img.edit ? img.edit.straighten : 0,
+                index: i
+            });
         }
 
         function openCropModal() {
@@ -309,66 +427,154 @@
             modalCrop.classList.remove('flex');
             document.body.style.overflow = '';
             if (cropperInstance) { cropperInstance.destroy(); cropperInstance = null; }
+            pendingCropData = null;
         }
 
         function cancelCropQueue() {
-            cropQueue =[];
+            if (currentEditorMode === 'add') cropQueue = [];
             closeCropModal();
             updateUI(); 
         }
 
         async function skipCrop() {
+            if (currentEditorMode === 'edit') return;
             showCropLoading(true);
-            const imgData = await processImage(currentOriginalFile);
+            const imgData = await buildOriginalImageRecord(currentOriginalDataUrl, currentOriginalName);
             images.push(imgData);
             currentCropIndex++;
+            await processNextCrop();
             showCropLoading(false);
-            processNextCrop();
         }
 
         async function confirmCrop() {
             if (!cropperInstance) return;
             showCropLoading(true);
             await new Promise(r => setTimeout(r, 50));
-            const canvas = cropperInstance.getCroppedCanvas({ maxWidth: 2048, maxHeight: 2048, fillColor: '#fff' });
-            const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
-            images.push({ dataUrl, w: canvas.width, h: canvas.height });
-            currentCropIndex++;
+            if (!cropperInstance) {
+                showCropLoading(false);
+                return;
+            }
+            const canvas = cropperInstance.getCroppedCanvas({ maxWidth: MAX_IMAGE_SIZE, maxHeight: MAX_IMAGE_SIZE, fillColor: '#fff' });
+            if (!canvas) {
+                showCropLoading(false);
+                alert("Could not crop that photo.");
+                return;
+            }
+
+            const record = {
+                dataUrl: canvas.toDataURL('image/jpeg', 0.85),
+                w: canvas.width,
+                h: canvas.height,
+                originalDataUrl: currentOriginalDataUrl,
+                originalName: currentOriginalName,
+                edit: {
+                    cropData: cropperInstance.getData(true),
+                    straighten: currentStraightenAngle
+                }
+            };
+
+            if (currentEditorMode === 'edit' && editingImageIndex > -1) {
+                images.splice(editingImageIndex, 1, record);
+                closeCropModal();
+                updateUI();
+            } else {
+                images.push(record);
+                currentCropIndex++;
+                await processNextCrop();
+            }
+
             showCropLoading(false);
-            processNextCrop();
         }
 
         function showCropLoading(show) {
             const btn = document.getElementById('crop-btn');
             const loader = document.getElementById('crop-loader');
-            if (show) { btn.disabled = true; loader.classList.remove('hidden'); } 
-            else { btn.disabled = false; loader.classList.add('hidden'); }
+            const skipBtn = document.getElementById('crop-skip-btn');
+            const cancelBtn = document.getElementById('crop-cancel-btn');
+            const slider = document.getElementById('straighten-slider');
+            const resetBtn = document.getElementById('straighten-reset-btn');
+            if (show) {
+                btn.disabled = true;
+                skipBtn.disabled = true;
+                cancelBtn.disabled = true;
+                slider.disabled = true;
+                resetBtn.disabled = true;
+                loader.classList.remove('hidden');
+            } else {
+                btn.disabled = false;
+                skipBtn.disabled = false;
+                cancelBtn.disabled = false;
+                slider.disabled = false;
+                resetBtn.disabled = false;
+                loader.classList.add('hidden');
+            }
         }
 
-        async function processImage(file) {
+        function handleStraightenInput(value) {
+            setStraightenAngle(value, true);
+        }
+
+        function resetStraighten() {
+            setStraightenAngle(0, true);
+        }
+
+        function setStraightenAngle(value, syncCropper) {
+            const nextAngle = Math.max(-45, Math.min(45, parseFloat(value) || 0));
+            currentStraightenAngle = nextAngle;
+            document.getElementById('straighten-slider').value = nextAngle.toFixed(1);
+            document.getElementById('straighten-val').innerText = `${nextAngle.toFixed(1)}\u00B0`;
+            if (syncCropper && cropperInstance) cropperInstance.rotateTo(nextAngle);
+        }
+
+        function readFileAsDataUrl(file) {
             return new Promise((resolve, reject) => {
                 const reader = new FileReader();
-                reader.onload = (e) => {
-                    const img = new Image();
-                    img.onload = () => {
-                        const MAX_SIZE = 2048; 
-                        let w = img.width; let h = img.height;
-                        if (w > MAX_SIZE || h > MAX_SIZE) {
-                            if (w > h) { h = Math.round((h * MAX_SIZE) / w); w = MAX_SIZE; } 
-                            else { w = Math.round((w * MAX_SIZE) / h); h = MAX_SIZE; }
-                        }
-                        const canvas = document.createElement('canvas');
-                        canvas.width = w; canvas.height = h;
-                        const ctx = canvas.getContext('2d');
-                        ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, w, h);
-                        ctx.drawImage(img, 0, 0, w, h);
-                        resolve({ dataUrl: canvas.toDataURL('image/jpeg', 0.85), w, h });
-                    };
-                    img.onerror = reject;
-                    img.src = e.target.result;
-                };
+                reader.onload = (e) => resolve(e.target.result);
                 reader.onerror = reject;
                 reader.readAsDataURL(file);
+            });
+        }
+
+        async function buildOriginalImageRecord(sourceDataUrl, originalName) {
+            const rendered = await renderImageToJpeg(sourceDataUrl);
+            return {
+                ...rendered,
+                originalDataUrl: sourceDataUrl,
+                originalName: originalName || '',
+                edit: {
+                    cropData: null,
+                    straighten: 0
+                }
+            };
+        }
+
+        function renderImageToJpeg(sourceDataUrl) {
+            return new Promise((resolve, reject) => {
+                const img = new Image();
+                img.onload = () => {
+                    let w = img.width;
+                    let h = img.height;
+                    if (w > MAX_IMAGE_SIZE || h > MAX_IMAGE_SIZE) {
+                        if (w > h) {
+                            h = Math.round((h * MAX_IMAGE_SIZE) / w);
+                            w = MAX_IMAGE_SIZE;
+                        } else {
+                            w = Math.round((w * MAX_IMAGE_SIZE) / h);
+                            h = MAX_IMAGE_SIZE;
+                        }
+                    }
+
+                    const canvas = document.createElement('canvas');
+                    canvas.width = w;
+                    canvas.height = h;
+                    const ctx = canvas.getContext('2d');
+                    ctx.fillStyle = "#fff";
+                    ctx.fillRect(0, 0, w, h);
+                    ctx.drawImage(img, 0, 0, w, h);
+                    resolve({ dataUrl: canvas.toDataURL('image/jpeg', 0.85), w, h });
+                };
+                img.onerror = reject;
+                img.src = sourceDataUrl;
             });
         }
 
@@ -379,6 +585,7 @@
                 const div = document.createElement('div');
                 // Removed specific tiny handle. The entire card is now the draggable target.
                 div.className = "grid-item-card relative aspect-square bg-slate-100 rounded-2xl overflow-hidden shadow-sm border border-slate-200 cursor-grab active:cursor-grabbing group animate-in fade-in zoom-in duration-300";
+                div.onclick = () => editImg(i);
                 
                 div.innerHTML = `
                     <img src="${img.dataUrl}" draggable="false" class="w-full h-full object-cover pointer-events-none select-none">
@@ -386,8 +593,11 @@
                     <div class="absolute top-2 left-2 bg-black/60 backdrop-blur-md text-white rounded-md px-2 py-0.5 text-[11px] font-black pointer-events-none select-none shadow-sm z-10">
                         ${i + 1}
                     </div>
+                    <div class="absolute bottom-2 left-2 right-2 bg-black/50 backdrop-blur-md text-white rounded-md px-2 py-1 text-[9px] font-black uppercase tracking-widest pointer-events-none select-none text-center opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity z-10">
+                        Edit
+                    </div>
                     
-                    <button onclick="removeImg(${i})" class="no-drag absolute top-2 right-2 bg-black/60 hover:bg-red-500 transition-colors text-white rounded-full w-8 h-8 flex items-center justify-center text-sm backdrop-blur-md shadow-sm z-20 active:scale-90">✕</button>
+                    <button onclick="event.stopPropagation(); removeImg(${i})" class="no-drag absolute top-2 right-2 bg-black/60 hover:bg-red-500 transition-colors text-white rounded-full w-8 h-8 flex items-center justify-center text-sm backdrop-blur-md shadow-sm z-20 active:scale-90">&times;</button>
                 `;
                 grid.appendChild(div);
             });
@@ -400,11 +610,11 @@
             // Contextual Drag Hint logic
             const subtext = document.getElementById('stats-subtext');
             if (images.length > 1) {
-                subtext.innerText = "Press & hold photo to reorder";
+                subtext.innerText = "Tap to edit, press & hold to reorder";
                 subtext.classList.add('text-indigo-600');
                 subtext.classList.remove('text-slate-500');
             } else {
-                subtext.innerText = "Ready for review";
+                subtext.innerText = "Tap photo to edit crop & straighten";
                 subtext.classList.remove('text-indigo-600');
                 subtext.classList.add('text-slate-500');
             }
