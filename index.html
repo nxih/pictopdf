@@ -70,6 +70,21 @@
         }
         .straighten-slider::-webkit-slider-runnable-track { height: 46px; }
         .straighten-slider::-moz-range-track { height: 46px; background: transparent; }
+        #crop-modal button:disabled, #crop-modal input:disabled {
+            opacity: 0.45;
+            pointer-events: none;
+        }
+        #rotate-btn svg {
+            transform-origin: center;
+            will-change: transform;
+        }
+        #rotate-btn.rotate-tap svg {
+            animation: rotate-tap 220ms cubic-bezier(0.2, 0, 0, 1);
+        }
+        @keyframes rotate-tap {
+            from { transform: rotate(0deg) scale(0.92); }
+            to { transform: rotate(90deg) scale(1); }
+        }
 
         /* Premium Drag & Drop Reordering Styles */
         .grid-item-card {
@@ -186,7 +201,12 @@
                         <span class="text-[10px] font-black uppercase tracking-[0.22em] text-slate-400">Straighten</span>
                         <span id="straighten-val" class="text-lg font-black tabular-nums mt-1">0.0&deg;</span>
                     </div>
-                    <div class="w-12"></div>
+                    <button id="rotate-btn" type="button" onclick="rotateImage()" aria-label="Rotate photo clockwise" class="w-12 h-12 rounded-full bg-white/10 text-white flex items-center justify-center active:scale-95 active:bg-white/20 transition-all -mr-2">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2.5">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h5"></path>
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M4.8 13A7.2 7.2 0 1 0 7 7.8L4 10.8"></path>
+                        </svg>
+                    </button>
                 </div>
                 <div class="relative h-12 flex items-center">
                     <div class="straighten-track absolute inset-x-0 top-1/2 -translate-y-1/2"></div>
@@ -267,11 +287,14 @@
         let currentCropIndex = 0;
         let currentOriginalFile = null;
         let currentOriginalDataUrl = '';
+        let currentEditorSourceDataUrl = '';
         let currentOriginalName = '';
         let currentEditorMode = 'add';
         let editingImageIndex = -1;
         let currentStraightenAngle = 0;
+        let currentRotateDegrees = 0;
         let pendingCropData = null;
+        let editorLoadToken = 0;
         let cropperInstance = null;
         let sortableInstance = null;
         let isSorting = false;
@@ -340,14 +363,15 @@
             currentOriginalFile = cropQueue.shift();
             try {
                 const sourceDataUrl = await readFileAsDataUrl(currentOriginalFile);
-                openImageEditor({
+                await openImageEditor({
                     mode: 'add',
                     sourceDataUrl,
                     originalName: currentOriginalFile.name || '',
                     title: `Crop (${currentCropIndex}/${totalCropItems})`,
                     confirmText: cropQueue.length > 0 ? 'Crop & Next' : 'Crop & Done',
                     cropData: null,
-                    straighten: 0
+                    straighten: 0,
+                    rotateDegrees: 0
                 });
             } catch (error) {
                 console.error("Image Load Error", error);
@@ -357,12 +381,13 @@
             }
         }
 
-        function openImageEditor({ mode, sourceDataUrl, originalName, title, confirmText, cropData, straighten, index = -1 }) {
+        async function openImageEditor({ mode, sourceDataUrl, originalName, title, confirmText, cropData, straighten, rotateDegrees, index = -1 }) {
             currentEditorMode = mode;
             editingImageIndex = index;
             currentOriginalDataUrl = sourceDataUrl;
             currentOriginalName = originalName || '';
             pendingCropData = cropData || null;
+            currentRotateDegrees = normalizeRotateDegrees(rotateDegrees || 0);
 
             document.getElementById('crop-title').innerText = title;
             document.getElementById('crop-btn-text').innerText = confirmText;
@@ -370,41 +395,74 @@
             setStraightenAngle(straighten || 0, false);
 
             openCropModal();
-
-            const imageEl = document.getElementById('crop-image');
-            if (cropperInstance) cropperInstance.destroy();
-            cropperInstance = null;
-
-            imageEl.onload = () => {
-                cropperInstance = new Cropper(imageEl, {
-                    viewMode: 1,
-                    dragMode: 'move',
-                    autoCropArea: 0.9,
-                    restore: false,
-                    guides: true,
-                    center: true,
-                    highlight: false,
-                    cropBoxMovable: true,
-                    cropBoxResizable: true,
-                    toggleDragModeOnDblclick: false,
-                    ready() {
-                        if (currentStraightenAngle) cropperInstance.rotateTo(currentStraightenAngle);
-                        if (pendingCropData) {
-                            setTimeout(() => {
-                                if (cropperInstance) cropperInstance.setData(pendingCropData);
-                            }, 80);
-                        }
-                    }
-                });
-            };
-            imageEl.removeAttribute('src');
-            imageEl.src = sourceDataUrl;
+            await loadCropperForCurrentState({ restoreCropData: !!pendingCropData });
         }
 
-        function editImg(i) {
+        async function loadCropperForCurrentState({ restoreCropData }) {
+            const loadToken = ++editorLoadToken;
+            const imageEl = document.getElementById('crop-image');
+            setCropControlsDisabled(true);
+            if (cropperInstance) cropperInstance.destroy();
+            cropperInstance = null;
+            imageEl.removeAttribute('src');
+
+            try {
+                currentEditorSourceDataUrl = await buildEditorSourceDataUrl(currentOriginalDataUrl, currentRotateDegrees);
+            } catch (error) {
+                console.error("Rotate Source Error", error);
+                alert("Could not rotate that photo.");
+                setCropControlsDisabled(false);
+                return;
+            }
+
+            if (loadToken !== editorLoadToken) return;
+
+            return new Promise((resolve) => {
+                imageEl.onload = () => {
+                    if (loadToken !== editorLoadToken) {
+                        resolve();
+                        return;
+                    }
+
+                    cropperInstance = new Cropper(imageEl, {
+                        viewMode: 1,
+                        dragMode: 'move',
+                        autoCropArea: 1,
+                        restore: false,
+                        guides: true,
+                        center: true,
+                        highlight: false,
+                        cropBoxMovable: true,
+                        cropBoxResizable: true,
+                        toggleDragModeOnDblclick: false,
+                        ready() {
+                            applyEditorRotation();
+                            if (restoreCropData && pendingCropData) {
+                                setTimeout(() => {
+                                    if (loadToken === editorLoadToken && cropperInstance) cropperInstance.setData(pendingCropData);
+                                    setCropControlsDisabled(false);
+                                    resolve();
+                                }, 80);
+                            } else {
+                                scheduleCropBoxRefit();
+                                setCropControlsDisabled(false);
+                                resolve();
+                            }
+                        }
+                    });
+                };
+                imageEl.onerror = () => {
+                    setCropControlsDisabled(false);
+                    resolve();
+                };
+                imageEl.src = currentEditorSourceDataUrl;
+            });
+        }
+
+        async function editImg(i) {
             if (isSorting || !images[i]) return;
             const img = images[i];
-            openImageEditor({
+            await openImageEditor({
                 mode: 'edit',
                 sourceDataUrl: img.originalDataUrl || img.dataUrl,
                 originalName: img.originalName || '',
@@ -412,6 +470,7 @@
                 confirmText: 'Update Photo',
                 cropData: img.edit ? img.edit.cropData : null,
                 straighten: img.edit ? img.edit.straighten : 0,
+                rotateDegrees: img.edit ? img.edit.rotateDegrees : 0,
                 index: i
             });
         }
@@ -469,7 +528,8 @@
                 originalName: currentOriginalName,
                 edit: {
                     cropData: cropperInstance.getData(true),
-                    straighten: currentStraightenAngle
+                    straighten: currentStraightenAngle,
+                    rotateDegrees: currentRotateDegrees
                 }
             };
 
@@ -487,26 +547,33 @@
         }
 
         function showCropLoading(show) {
-            const btn = document.getElementById('crop-btn');
             const loader = document.getElementById('crop-loader');
+            setCropControlsDisabled(show);
+            if (show) loader.classList.remove('hidden');
+            else loader.classList.add('hidden');
+        }
+
+        function setCropControlsDisabled(show) {
+            const btn = document.getElementById('crop-btn');
             const skipBtn = document.getElementById('crop-skip-btn');
             const cancelBtn = document.getElementById('crop-cancel-btn');
             const slider = document.getElementById('straighten-slider');
             const resetBtn = document.getElementById('straighten-reset-btn');
+            const rotateBtn = document.getElementById('rotate-btn');
             if (show) {
                 btn.disabled = true;
                 skipBtn.disabled = true;
                 cancelBtn.disabled = true;
                 slider.disabled = true;
                 resetBtn.disabled = true;
-                loader.classList.remove('hidden');
+                rotateBtn.disabled = true;
             } else {
                 btn.disabled = false;
                 skipBtn.disabled = false;
                 cancelBtn.disabled = false;
                 slider.disabled = false;
                 resetBtn.disabled = false;
-                loader.classList.add('hidden');
+                rotateBtn.disabled = false;
             }
         }
 
@@ -518,12 +585,80 @@
             setStraightenAngle(0, true);
         }
 
+        async function rotateImage() {
+            currentRotateDegrees = normalizeRotateDegrees(currentRotateDegrees + 90);
+            pendingCropData = null;
+            animateRotateButton();
+            await loadCropperForCurrentState({ restoreCropData: false });
+        }
+
         function setStraightenAngle(value, syncCropper) {
             const nextAngle = Math.max(-45, Math.min(45, parseFloat(value) || 0));
             currentStraightenAngle = nextAngle;
             document.getElementById('straighten-slider').value = nextAngle.toFixed(1);
             document.getElementById('straighten-val').innerText = `${nextAngle.toFixed(1)}\u00B0`;
-            if (syncCropper && cropperInstance) cropperInstance.rotateTo(nextAngle);
+            if (syncCropper) applyEditorRotation();
+        }
+
+        function applyEditorRotation() {
+            if (cropperInstance) cropperInstance.rotateTo(currentStraightenAngle);
+        }
+
+        function scheduleCropBoxRefit() {
+            window.requestAnimationFrame(() => {
+                window.requestAnimationFrame(fitCropBoxToVisibleCanvas);
+            });
+        }
+
+        function fitCropBoxToVisibleCanvas() {
+            if (!cropperInstance) return;
+
+            const canvasData = cropperInstance.getCanvasData();
+            const containerData = cropperInstance.getContainerData();
+            const left = Math.max(canvasData.left, 0);
+            const top = Math.max(canvasData.top, 0);
+            const right = Math.min(canvasData.left + canvasData.width, containerData.width);
+            const bottom = Math.min(canvasData.top + canvasData.height, containerData.height);
+            const width = Math.max(right - left, 1);
+            const height = Math.max(bottom - top, 1);
+
+            cropperInstance.setCropBoxData({ left, top, width, height });
+        }
+
+        function normalizeRotateDegrees(value) {
+            return ((Math.round(value / 90) * 90) % 360 + 360) % 360;
+        }
+
+        function animateRotateButton() {
+            const rotateBtn = document.getElementById('rotate-btn');
+            rotateBtn.classList.remove('rotate-tap');
+            void rotateBtn.offsetWidth;
+            rotateBtn.classList.add('rotate-tap');
+        }
+
+        function buildEditorSourceDataUrl(sourceDataUrl, rotateDegrees) {
+            const normalizedDegrees = normalizeRotateDegrees(rotateDegrees);
+            if (normalizedDegrees === 0) return Promise.resolve(sourceDataUrl);
+
+            return new Promise((resolve, reject) => {
+                const img = new Image();
+                img.onload = () => {
+                    const canvas = document.createElement('canvas');
+                    const quarterTurn = normalizedDegrees === 90 || normalizedDegrees === 270;
+                    canvas.width = quarterTurn ? img.height : img.width;
+                    canvas.height = quarterTurn ? img.width : img.height;
+
+                    const ctx = canvas.getContext('2d');
+                    ctx.fillStyle = "#fff";
+                    ctx.fillRect(0, 0, canvas.width, canvas.height);
+                    ctx.translate(canvas.width / 2, canvas.height / 2);
+                    ctx.rotate((normalizedDegrees * Math.PI) / 180);
+                    ctx.drawImage(img, -img.width / 2, -img.height / 2);
+                    resolve(canvas.toDataURL('image/jpeg', 0.92));
+                };
+                img.onerror = reject;
+                img.src = sourceDataUrl;
+            });
         }
 
         function readFileAsDataUrl(file) {
@@ -543,7 +678,8 @@
                 originalName: originalName || '',
                 edit: {
                     cropData: null,
-                    straighten: 0
+                    straighten: 0,
+                    rotateDegrees: 0
                 }
             };
         }
@@ -610,11 +746,11 @@
             // Contextual Drag Hint logic
             const subtext = document.getElementById('stats-subtext');
             if (images.length > 1) {
-                subtext.innerText = "Tap to edit, press & hold to reorder";
+                subtext.innerText = "Tap to crop, rotate & straighten; hold to reorder";
                 subtext.classList.add('text-indigo-600');
                 subtext.classList.remove('text-slate-500');
             } else {
-                subtext.innerText = "Tap photo to edit crop & straighten";
+                subtext.innerText = "Tap photo to crop, rotate & straighten";
                 subtext.classList.remove('text-indigo-600');
                 subtext.classList.add('text-slate-500');
             }
