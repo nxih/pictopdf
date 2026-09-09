@@ -28,11 +28,17 @@
         .no-scrollbar::-webkit-scrollbar { display: none; }
         
         .crop-stage {
+            --crop-touch-gutter: 28px;
+            --crop-touch-gutter-total: 56px;
             touch-action: none;
             user-select: none;
             -webkit-user-select: none;
         }
         .crop-photo {
+            position: relative;
+            z-index: 1;
+            width: calc(100% - var(--crop-touch-gutter-total));
+            height: calc(100% - var(--crop-touch-gutter-total));
             max-width: 100%;
             max-height: 100%;
             object-fit: contain;
@@ -41,6 +47,7 @@
         .crop-overlay {
             position: absolute;
             inset: 0;
+            z-index: 2;
             touch-action: none;
         }
         .crop-outline {
@@ -86,6 +93,53 @@
             fill: #eef2ff;
             stroke-width: 3;
             transform: scaleY(1.22);
+        }
+        .crop-loupe {
+            position: absolute;
+            left: 0;
+            top: 0;
+            z-index: 3;
+            width: 116px;
+            height: 116px;
+            border-radius: 999px;
+            overflow: hidden;
+            opacity: 0;
+            pointer-events: none;
+            background-color: #111827;
+            background-repeat: no-repeat;
+            border: 2px solid rgba(255, 255, 255, 0.92);
+            box-shadow:
+                0 18px 42px rgba(0, 0, 0, 0.42),
+                0 0 0 1px rgba(79, 70, 229, 0.7),
+                inset 0 0 0 1px rgba(15, 23, 42, 0.2);
+            transform: translate3d(0, 0, 0) scale(0.94);
+            transition: opacity 110ms ease, box-shadow 110ms ease;
+            will-change: transform, opacity, background-position;
+        }
+        .crop-loupe.is-visible {
+            opacity: 1;
+            box-shadow:
+                0 22px 48px rgba(0, 0, 0, 0.5),
+                0 0 0 1px rgba(129, 140, 248, 0.9),
+                inset 0 0 0 1px rgba(15, 23, 42, 0.22);
+        }
+        .crop-loupe::before,
+        .crop-loupe::after {
+            content: "";
+            position: absolute;
+            left: 50%;
+            top: 50%;
+            background: rgba(255, 255, 255, 0.94);
+            box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.32);
+            transform: translate(-50%, -50%);
+        }
+        .crop-loupe::before {
+            width: 116px;
+            height: 1px;
+        }
+        .crop-loupe::after {
+            width: 1px;
+            height: 116px;
         }
         .straighten-track {
             height: 42px;
@@ -247,6 +301,7 @@
         <div id="crop-stage" class="crop-stage flex-1 min-h-0 relative bg-black overflow-hidden w-full flex items-center justify-center">
             <img id="crop-image" class="crop-photo block" draggable="false" src="">
             <svg id="crop-overlay" class="crop-overlay" aria-hidden="true"></svg>
+            <div id="crop-loupe" class="crop-loupe" aria-hidden="true"></div>
         </div>
 
         <div class="shrink-0 pb-[max(env(safe-area-inset-bottom),1.25rem)] pt-4 px-5 sm:px-6 border-t border-white/10 glass-dark space-y-4">
@@ -267,7 +322,7 @@
                 <div class="relative h-12 flex items-center">
                     <div class="straighten-track absolute inset-x-0 top-1/2 -translate-y-1/2"></div>
                     <div class="absolute left-1/2 top-0 bottom-0 w-px bg-indigo-400/90 shadow-[0_0_14px_rgba(129,140,248,0.9)] pointer-events-none"></div>
-                    <input type="range" id="straighten-slider" min="-45" max="45" step="0.1" value="0" oninput="handleStraightenInput(this.value)" class="straighten-slider relative z-10 w-full h-12">
+                    <input type="range" id="straighten-slider" min="-45" max="45" step="0.1" value="0" onpointerdown="beginStraightenInteraction()" ontouchstart="beginStraightenInteraction()" oninput="handleStraightenInput(this.value)" onchange="endStraightenInteraction()" onpointerup="endStraightenInteraction()" ontouchend="endStraightenInteraction()" class="straighten-slider relative z-10 w-full h-12">
                 </div>
             </div>
             <button id="crop-btn" onclick="confirmCrop()" class="bg-indigo-600 hover:bg-indigo-500 text-white w-full py-4 rounded-2xl font-black shadow-xl btn-active flex justify-center items-center gap-2 text-lg transition-colors">
@@ -348,6 +403,7 @@
         let currentEditorMode = 'add';
         let editingImageIndex = -1;
         let currentStraightenAngle = 0;
+        let bakedStraightenAngle = 0;
         let currentRotateDegrees = 0;
         let pendingCropPoints = null;
         let currentCropPoints = null;
@@ -357,11 +413,18 @@
         let imageDisplayRect = null;
         let editorLoadToken = 0;
         let straightenReloadTimer = null;
+        let straightenPreviewFrame = null;
+        let straightenCommitPromise = null;
+        let isStraightening = false;
         let sortableInstance = null;
         let isSorting = false;
 
         const MAX_IMAGE_SIZE = 2048;
         const STRAIGHTEN_SNAP_DEGREES = 0.5;
+        const CROP_TOUCH_GUTTER = 28;
+        const CROP_LOUPE_SIZE = 116;
+        const CROP_LOUPE_ZOOM = 2.35;
+        const CROP_CORNER_HANDLES = ['tl', 'tr', 'br', 'bl'];
 
         const isDesktop = window.matchMedia("(min-width: 1024px) or ((hover: hover) and (pointer: fine))").matches;
 
@@ -471,9 +534,13 @@
             const imageEl = document.getElementById('crop-image');
             setCropControlsDisabled(true);
             clearTimeout(straightenReloadTimer);
+            if (straightenPreviewFrame) cancelAnimationFrame(straightenPreviewFrame);
+            straightenPreviewFrame = null;
+            isStraightening = false;
             activeCropHandle = null;
             dragStartPoints = null;
             dragStartPointer = null;
+            hideCropLoupe();
             imageDisplayRect = null;
             currentCropPoints = restoreCropPoints && pendingCropPoints ? cloneCropPoints(pendingCropPoints) : defaultCropPoints();
             renderCropOverlay();
@@ -490,6 +557,7 @@
             }
 
             if (loadToken !== editorLoadToken) return;
+            bakedStraightenAngle = currentStraightenAngle;
 
             return new Promise((resolve) => {
                 imageEl.onload = () => {
@@ -499,9 +567,11 @@
                     }
 
                     imageEl.style.opacity = '1';
+                    imageEl.style.transform = '';
                     window.requestAnimationFrame(() => {
                         updateImageDisplayRect();
                         renderCropOverlay();
+                        applyLiveStraightenPreview();
                         setCropControlsDisabled(false);
                         resolve();
                     });
@@ -541,12 +611,17 @@
             modalCrop.classList.remove('flex');
             document.body.style.overflow = '';
             clearTimeout(straightenReloadTimer);
+            if (straightenPreviewFrame) cancelAnimationFrame(straightenPreviewFrame);
+            straightenPreviewFrame = null;
+            straightenCommitPromise = null;
+            isStraightening = false;
             editorLoadToken++;
             currentCropPoints = null;
             activeCropHandle = null;
             window.removeEventListener('pointermove', moveCropHandle);
             window.removeEventListener('pointerup', stopCropHandleDrag);
             window.removeEventListener('pointercancel', stopCropHandleDrag);
+            hideCropLoupe();
             renderCropOverlay();
             pendingCropPoints = null;
         }
@@ -571,6 +646,8 @@
             if (!currentCropPoints || !currentEditorSourceDataUrl) return;
             showCropLoading(true);
             await new Promise(r => setTimeout(r, 50));
+            await commitStraightenPreview();
+            setCropControlsDisabled(true);
             let rendered;
             try {
                 rendered = await renderPerspectiveCrop(currentEditorSourceDataUrl, currentCropPoints);
@@ -645,6 +722,16 @@
             setStraightenAngle(value, true);
         }
 
+        function beginStraightenInteraction() {
+            isStraightening = true;
+            clearTimeout(straightenReloadTimer);
+        }
+
+        function endStraightenInteraction() {
+            isStraightening = false;
+            commitStraightenPreview();
+        }
+
         async function resetPhotoEdits() {
             currentRotateDegrees = 0;
             pendingCropPoints = null;
@@ -667,16 +754,58 @@
             currentStraightenAngle = nextAngle;
             document.getElementById('straighten-slider').value = nextAngle.toFixed(1);
             document.getElementById('straighten-val').innerText = `${nextAngle.toFixed(1)}\u00B0`;
-            if (syncEditor) scheduleStraightenRebuild();
+            if (syncEditor) {
+                applyLiveStraightenPreview();
+                scheduleStraightenCommit();
+            }
         }
 
-        function scheduleStraightenRebuild() {
+        function scheduleStraightenCommit() {
             if (!currentOriginalDataUrl) return;
+            if (isStraightening) return;
             clearTimeout(straightenReloadTimer);
             straightenReloadTimer = setTimeout(() => {
-                pendingCropPoints = currentCropPoints ? cloneCropPoints(currentCropPoints) : null;
-                loadCropEditorForCurrentState({ restoreCropPoints: !!pendingCropPoints });
-            }, 90);
+                commitStraightenPreview();
+            }, 360);
+        }
+
+        function applyLiveStraightenPreview() {
+            const imageEl = document.getElementById('crop-image');
+            if (!imageEl) return;
+            if (straightenPreviewFrame) cancelAnimationFrame(straightenPreviewFrame);
+            straightenPreviewFrame = requestAnimationFrame(() => {
+                const delta = currentStraightenAngle - bakedStraightenAngle;
+                if (Math.abs(delta) < 0.05) {
+                    imageEl.style.transform = '';
+                    return;
+                }
+
+                const radians = Math.abs(delta * Math.PI / 180);
+                const displayWidth = imageDisplayRect ? imageDisplayRect.width : imageEl.clientWidth;
+                const displayHeight = imageDisplayRect ? imageDisplayRect.height : imageEl.clientHeight;
+                const sin = Math.sin(radians);
+                const cos = Math.cos(radians);
+                const scaleX = displayWidth ? (displayWidth * cos + displayHeight * sin) / displayWidth : 1;
+                const scaleY = displayHeight ? (displayWidth * sin + displayHeight * cos) / displayHeight : 1;
+                const scale = Math.min(1.35, Math.max(1, scaleX, scaleY));
+                imageEl.style.transform = `rotate(${delta}deg) scale(${scale})`;
+            });
+        }
+
+        async function commitStraightenPreview() {
+            clearTimeout(straightenReloadTimer);
+            if (!currentOriginalDataUrl || Math.abs(currentStraightenAngle - bakedStraightenAngle) < 0.05) {
+                applyLiveStraightenPreview();
+                return;
+            }
+            if (straightenCommitPromise) return straightenCommitPromise;
+
+            pendingCropPoints = currentCropPoints ? cloneCropPoints(currentCropPoints) : null;
+            straightenCommitPromise = loadCropEditorForCurrentState({ restoreCropPoints: !!pendingCropPoints })
+                .finally(() => {
+                    straightenCommitPromise = null;
+                });
+            return straightenCommitPromise;
         }
 
         function updateImageDisplayRect() {
@@ -688,21 +817,26 @@
             }
             const stageRect = stage.getBoundingClientRect();
             const imageAspect = imageEl.naturalWidth / imageEl.naturalHeight;
-            const stageAspect = stageRect.width / stageRect.height;
+            const gutter = Math.min(CROP_TOUCH_GUTTER, Math.max(0, (Math.min(stageRect.width, stageRect.height) - 1) / 2));
+            const availableWidth = Math.max(1, stageRect.width - gutter * 2);
+            const availableHeight = Math.max(1, stageRect.height - gutter * 2);
+            const stageAspect = availableWidth / availableHeight;
             let width;
             let height;
 
             if (imageAspect > stageAspect) {
-                width = stageRect.width;
+                width = availableWidth;
                 height = width / imageAspect;
             } else {
-                height = stageRect.height;
+                height = availableHeight;
                 width = height * imageAspect;
             }
 
+            stage.style.setProperty('--crop-touch-gutter', `${gutter}px`);
+            stage.style.setProperty('--crop-touch-gutter-total', `${gutter * 2}px`);
             imageDisplayRect = {
-                left: (stageRect.width - width) / 2,
-                top: (stageRect.height - height) / 2,
+                left: gutter + (availableWidth - width) / 2,
+                top: gutter + (availableHeight - height) / 2,
                 width,
                 height
             };
@@ -784,6 +918,7 @@
         function startCropHandleDrag(event) {
             if (!currentCropPoints || !imageDisplayRect) return;
             event.preventDefault();
+            clearTimeout(straightenReloadTimer);
             activeCropHandle = event.currentTarget.dataset.handle;
             dragStartPoints = cloneCropPoints(currentCropPoints);
             dragStartPointer = pointerEventToNormalizedPoint(event);
@@ -792,6 +927,7 @@
             window.addEventListener('pointerup', stopCropHandleDrag, { once: true });
             window.addEventListener('pointercancel', stopCropHandleDrag, { once: true });
             renderCropOverlay();
+            updateCropLoupe(event, currentCropPoints[activeCropHandle]);
         }
 
         function moveCropHandle(event) {
@@ -810,9 +946,11 @@
                 currentCropPoints = nextPoints;
                 renderCropOverlay();
             }
+            updateCropLoupe(event, currentCropPoints[activeCropHandle] || pointer);
         }
 
         function stopCropHandleDrag() {
+            hideCropLoupe();
             activeCropHandle = null;
             dragStartPoints = null;
             dragStartPointer = null;
@@ -820,6 +958,7 @@
             window.removeEventListener('pointerup', stopCropHandleDrag);
             window.removeEventListener('pointercancel', stopCropHandleDrag);
             renderCropOverlay();
+            if (Math.abs(currentStraightenAngle - bakedStraightenAngle) >= 0.05) scheduleStraightenCommit();
         }
 
         function moveCropEdge(points, pointer) {
@@ -855,6 +994,58 @@
             const x = (event.clientX - stageRect.left - imageDisplayRect.left) / imageDisplayRect.width;
             const y = (event.clientY - stageRect.top - imageDisplayRect.top) / imageDisplayRect.height;
             return clampPoint({ x, y });
+        }
+
+        function pointerEventToStagePoint(event) {
+            const stage = document.getElementById('crop-stage');
+            const stageRect = stage.getBoundingClientRect();
+            return {
+                x: event.clientX - stageRect.left,
+                y: event.clientY - stageRect.top,
+                width: stageRect.width,
+                height: stageRect.height
+            };
+        }
+
+        function updateCropLoupe(event, focusPoint) {
+            const loupe = document.getElementById('crop-loupe');
+            if (!loupe || !CROP_CORNER_HANDLES.includes(activeCropHandle) || !focusPoint || !imageDisplayRect || !currentEditorSourceDataUrl) {
+                hideCropLoupe();
+                return;
+            }
+
+            const stagePoint = pointerEventToStagePoint(event);
+            const offset = 18;
+            const margin = 8;
+            let x = stagePoint.x - CROP_LOUPE_SIZE / 2;
+            let y = stagePoint.y - CROP_LOUPE_SIZE - offset;
+
+            if (y < margin) y = stagePoint.y + offset;
+
+            const maxX = Math.max(0, stagePoint.width - CROP_LOUPE_SIZE);
+            const maxY = Math.max(0, stagePoint.height - CROP_LOUPE_SIZE);
+            const minX = Math.min(margin, maxX);
+            const minY = Math.min(margin, maxY);
+            x = Math.min(Math.max(minX, maxX - margin), Math.max(minX, x));
+            y = Math.min(Math.max(minY, maxY - margin), Math.max(minY, y));
+
+            const backgroundWidth = imageDisplayRect.width * CROP_LOUPE_ZOOM;
+            const backgroundHeight = imageDisplayRect.height * CROP_LOUPE_ZOOM;
+            const backgroundX = CROP_LOUPE_SIZE / 2 - focusPoint.x * backgroundWidth;
+            const backgroundY = CROP_LOUPE_SIZE / 2 - focusPoint.y * backgroundHeight;
+
+            loupe.style.backgroundImage = `url("${currentEditorSourceDataUrl}")`;
+            loupe.style.backgroundSize = `${backgroundWidth}px ${backgroundHeight}px`;
+            loupe.style.backgroundPosition = `${backgroundX}px ${backgroundY}px`;
+            loupe.style.transform = `translate3d(${x}px, ${y}px, 0) scale(1)`;
+            loupe.classList.add('is-visible');
+        }
+
+        function hideCropLoupe() {
+            const loupe = document.getElementById('crop-loupe');
+            if (!loupe) return;
+            loupe.classList.remove('is-visible');
+            loupe.style.transform = loupe.style.transform.replace('scale(1)', 'scale(0.94)');
         }
 
         function cropPointsToStage(points) {

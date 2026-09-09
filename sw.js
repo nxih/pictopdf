@@ -1,4 +1,4 @@
-const CACHE_NAME = 'pic-to-pdf-v8';
+const CACHE_NAME = 'pic-to-pdf-v10';
 const ASSETS = [
   './',
   './index.html',
