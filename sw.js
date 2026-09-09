@@ -1,12 +1,10 @@
-const CACHE_NAME = 'pic-to-pdf-v6';
+const CACHE_NAME = 'pic-to-pdf-v8';
 const ASSETS = [
   './',
   './index.html',
   'https://cdn.tailwindcss.com',
   'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js',
-  'https://cdnjs.cloudflare.com/ajax/libs/Sortable/1.15.0/Sortable.min.js',
-  'https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.5.13/cropper.min.css',
-  'https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.5.13/cropper.min.js'
+  'https://cdnjs.cloudflare.com/ajax/libs/Sortable/1.15.0/Sortable.min.js'
 ];
 
 self.addEventListener('install', (e) => {

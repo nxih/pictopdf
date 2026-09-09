@@ -14,8 +14,6 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/Sortable/1.15.0/Sortable.min.js"></script>
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.5.13/cropper.min.css" rel="stylesheet">
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.5.13/cropper.min.js"></script>
     
     <style>
         * { -webkit-tap-highlight-color: transparent; }
@@ -29,9 +27,66 @@
         .btn-active:active { transform: scale(0.96); opacity: 0.8; }
         .no-scrollbar::-webkit-scrollbar { display: none; }
         
-        /* Cropper Custom Theme */
-        .cropper-view-box, .cropper-face { border-radius: 4px; }
-        .cropper-line, .cropper-point { background-color: #4f46e5; }
+        .crop-stage {
+            touch-action: none;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+        .crop-photo {
+            max-width: 100%;
+            max-height: 100%;
+            object-fit: contain;
+            transition: opacity 140ms ease, transform 180ms cubic-bezier(0.2, 0, 0, 1);
+        }
+        .crop-overlay {
+            position: absolute;
+            inset: 0;
+            touch-action: none;
+        }
+        .crop-outline {
+            fill: rgba(79, 70, 229, 0.12);
+            stroke: #ffffff;
+            stroke-width: 2.5;
+            vector-effect: non-scaling-stroke;
+            filter: drop-shadow(0 1px 4px rgba(0,0,0,0.6));
+        }
+        .crop-mask {
+            fill: rgba(0, 0, 0, 0.58);
+            fill-rule: evenodd;
+        }
+        .crop-handle {
+            cursor: grab;
+            touch-action: none;
+        }
+        .crop-handle-active {
+            cursor: grabbing;
+        }
+        .crop-handle-dot,
+        .crop-edge-handle {
+            fill: #ffffff;
+            stroke: #4f46e5;
+            stroke-width: 2.5;
+            vector-effect: non-scaling-stroke;
+            filter: drop-shadow(0 2px 8px rgba(0,0,0,0.7));
+            pointer-events: none;
+            transform-box: fill-box;
+            transform-origin: center;
+            transition: transform 120ms ease, fill 120ms ease, stroke-width 120ms ease;
+        }
+        .crop-handle-hit {
+            fill: rgba(0, 0, 0, 0);
+            pointer-events: all;
+            touch-action: none;
+        }
+        .crop-handle-active .crop-handle-dot {
+            fill: #eef2ff;
+            transform: scale(1.22);
+        }
+        .crop-handle-active .crop-edge-handle {
+            fill: #eef2ff;
+            stroke-width: 3;
+            transform: scaleY(1.22);
+        }
         .straighten-track {
             height: 42px;
             background:
@@ -189,8 +244,9 @@
             <button id="crop-skip-btn" onclick="skipCrop()" class="text-sm font-bold text-slate-300 active:opacity-70 transition-opacity p-2 -mr-2">Skip</button>
         </div>
         
-        <div class="flex-1 min-h-0 relative bg-black overflow-hidden w-full flex items-center justify-center">
-            <img id="crop-image" class="block max-w-full" src="">
+        <div id="crop-stage" class="crop-stage flex-1 min-h-0 relative bg-black overflow-hidden w-full flex items-center justify-center">
+            <img id="crop-image" class="crop-photo block" draggable="false" src="">
+            <svg id="crop-overlay" class="crop-overlay" aria-hidden="true"></svg>
         </div>
 
         <div class="shrink-0 pb-[max(env(safe-area-inset-bottom),1.25rem)] pt-4 px-5 sm:px-6 border-t border-white/10 glass-dark space-y-4">
@@ -293,9 +349,14 @@
         let editingImageIndex = -1;
         let currentStraightenAngle = 0;
         let currentRotateDegrees = 0;
-        let pendingCropData = null;
+        let pendingCropPoints = null;
+        let currentCropPoints = null;
+        let activeCropHandle = null;
+        let dragStartPoints = null;
+        let dragStartPointer = null;
+        let imageDisplayRect = null;
         let editorLoadToken = 0;
-        let cropperInstance = null;
+        let straightenReloadTimer = null;
         let sortableInstance = null;
         let isSorting = false;
 
@@ -313,6 +374,12 @@
         const modalPreview = document.getElementById('preview-modal');
         const scrollContainer = document.getElementById('preview-scroll');
         const modalCrop = document.getElementById('crop-modal');
+
+        window.addEventListener('resize', () => {
+            if (modalCrop.classList.contains('hidden')) return;
+            updateImageDisplayRect();
+            renderCropOverlay();
+        });
 
         // --- Init Premium Mobile Drag & Drop ---
         document.addEventListener("DOMContentLoaded", () => {
@@ -370,7 +437,7 @@
                     originalName: currentOriginalFile.name || '',
                     title: `Crop (${currentCropIndex}/${totalCropItems})`,
                     confirmText: cropQueue.length > 0 ? 'Crop & Next' : 'Crop & Done',
-                    cropData: null,
+                    cropPoints: null,
                     straighten: 0,
                     rotateDegrees: 0
                 });
@@ -382,12 +449,12 @@
             }
         }
 
-        async function openImageEditor({ mode, sourceDataUrl, originalName, title, confirmText, cropData, straighten, rotateDegrees, index = -1 }) {
+        async function openImageEditor({ mode, sourceDataUrl, originalName, title, confirmText, cropPoints, straighten, rotateDegrees, index = -1 }) {
             currentEditorMode = mode;
             editingImageIndex = index;
             currentOriginalDataUrl = sourceDataUrl;
             currentOriginalName = originalName || '';
-            pendingCropData = cropData || null;
+            pendingCropPoints = sanitizeCropPoints(cropPoints);
             currentRotateDegrees = normalizeRotateDegrees(rotateDegrees || 0);
 
             document.getElementById('crop-title').innerText = title;
@@ -396,19 +463,25 @@
             setStraightenAngle(straighten || 0, false);
 
             openCropModal();
-            await loadCropperForCurrentState({ restoreCropData: !!pendingCropData });
+            await loadCropEditorForCurrentState({ restoreCropPoints: !!pendingCropPoints });
         }
 
-        async function loadCropperForCurrentState({ restoreCropData }) {
+        async function loadCropEditorForCurrentState({ restoreCropPoints }) {
             const loadToken = ++editorLoadToken;
             const imageEl = document.getElementById('crop-image');
             setCropControlsDisabled(true);
-            if (cropperInstance) cropperInstance.destroy();
-            cropperInstance = null;
+            clearTimeout(straightenReloadTimer);
+            activeCropHandle = null;
+            dragStartPoints = null;
+            dragStartPointer = null;
+            imageDisplayRect = null;
+            currentCropPoints = restoreCropPoints && pendingCropPoints ? cloneCropPoints(pendingCropPoints) : defaultCropPoints();
+            renderCropOverlay();
             imageEl.removeAttribute('src');
+            imageEl.style.opacity = '0';
 
             try {
-                currentEditorSourceDataUrl = await buildEditorSourceDataUrl(currentOriginalDataUrl, currentRotateDegrees);
+                currentEditorSourceDataUrl = await buildEditorSourceDataUrl(currentOriginalDataUrl, currentRotateDegrees, currentStraightenAngle);
             } catch (error) {
                 console.error("Rotate Source Error", error);
                 alert("Could not rotate that photo.");
@@ -425,31 +498,12 @@
                         return;
                     }
 
-                    cropperInstance = new Cropper(imageEl, {
-                        viewMode: 1,
-                        dragMode: 'move',
-                        autoCropArea: 1,
-                        restore: false,
-                        guides: true,
-                        center: true,
-                        highlight: false,
-                        cropBoxMovable: true,
-                        cropBoxResizable: true,
-                        toggleDragModeOnDblclick: false,
-                        ready() {
-                            applyEditorRotation();
-                            if (restoreCropData && pendingCropData) {
-                                setTimeout(() => {
-                                    if (loadToken === editorLoadToken && cropperInstance) cropperInstance.setData(pendingCropData);
-                                    setCropControlsDisabled(false);
-                                    resolve();
-                                }, 80);
-                            } else {
-                                scheduleCropBoxRefit();
-                                setCropControlsDisabled(false);
-                                resolve();
-                            }
-                        }
+                    imageEl.style.opacity = '1';
+                    window.requestAnimationFrame(() => {
+                        updateImageDisplayRect();
+                        renderCropOverlay();
+                        setCropControlsDisabled(false);
+                        resolve();
                     });
                 };
                 imageEl.onerror = () => {
@@ -469,7 +523,7 @@
                 originalName: img.originalName || '',
                 title: `Edit Photo ${i + 1}`,
                 confirmText: 'Update Photo',
-                cropData: img.edit ? img.edit.cropData : null,
+                cropPoints: img.edit ? img.edit.cropPoints : null,
                 straighten: img.edit ? img.edit.straighten : 0,
                 rotateDegrees: img.edit ? img.edit.rotateDegrees : 0,
                 index: i
@@ -486,8 +540,15 @@
             modalCrop.classList.add('hidden');
             modalCrop.classList.remove('flex');
             document.body.style.overflow = '';
-            if (cropperInstance) { cropperInstance.destroy(); cropperInstance = null; }
-            pendingCropData = null;
+            clearTimeout(straightenReloadTimer);
+            editorLoadToken++;
+            currentCropPoints = null;
+            activeCropHandle = null;
+            window.removeEventListener('pointermove', moveCropHandle);
+            window.removeEventListener('pointerup', stopCropHandleDrag);
+            window.removeEventListener('pointercancel', stopCropHandleDrag);
+            renderCropOverlay();
+            pendingCropPoints = null;
         }
 
         function cancelCropQueue() {
@@ -507,28 +568,30 @@
         }
 
         async function confirmCrop() {
-            if (!cropperInstance) return;
+            if (!currentCropPoints || !currentEditorSourceDataUrl) return;
             showCropLoading(true);
             await new Promise(r => setTimeout(r, 50));
-            if (!cropperInstance) {
-                showCropLoading(false);
-                return;
+            let rendered;
+            try {
+                rendered = await renderPerspectiveCrop(currentEditorSourceDataUrl, currentCropPoints);
+            } catch (error) {
+                console.error("Perspective Crop Error", error);
+                rendered = null;
             }
-            const canvas = cropperInstance.getCroppedCanvas({ maxWidth: MAX_IMAGE_SIZE, maxHeight: MAX_IMAGE_SIZE, fillColor: '#fff' });
-            if (!canvas) {
+            if (!rendered) {
                 showCropLoading(false);
                 alert("Could not crop that photo.");
                 return;
             }
 
             const record = {
-                dataUrl: canvas.toDataURL('image/jpeg', 0.85),
-                w: canvas.width,
-                h: canvas.height,
+                dataUrl: rendered.dataUrl,
+                w: rendered.w,
+                h: rendered.h,
                 originalDataUrl: currentOriginalDataUrl,
                 originalName: currentOriginalName,
                 edit: {
-                    cropData: cropperInstance.getData(true),
+                    cropPoints: cloneCropPoints(currentCropPoints),
                     straighten: currentStraightenAngle,
                     rotateDegrees: currentRotateDegrees
                 }
@@ -584,50 +647,301 @@
 
         async function resetPhotoEdits() {
             currentRotateDegrees = 0;
-            pendingCropData = null;
+            pendingCropPoints = null;
+            currentCropPoints = defaultCropPoints();
             setStraightenAngle(0, false);
-            await loadCropperForCurrentState({ restoreCropData: false });
+            await loadCropEditorForCurrentState({ restoreCropPoints: false });
         }
 
         async function rotateImage() {
             currentRotateDegrees = normalizeRotateDegrees(currentRotateDegrees + 90);
-            pendingCropData = null;
+            pendingCropPoints = null;
+            currentCropPoints = defaultCropPoints();
             animateRotateButton();
-            await loadCropperForCurrentState({ restoreCropData: false });
+            await loadCropEditorForCurrentState({ restoreCropPoints: false });
         }
 
-        function setStraightenAngle(value, syncCropper) {
+        function setStraightenAngle(value, syncEditor) {
             let nextAngle = Math.max(-45, Math.min(45, parseFloat(value) || 0));
             if (Math.abs(nextAngle) <= STRAIGHTEN_SNAP_DEGREES) nextAngle = 0;
             currentStraightenAngle = nextAngle;
             document.getElementById('straighten-slider').value = nextAngle.toFixed(1);
             document.getElementById('straighten-val').innerText = `${nextAngle.toFixed(1)}\u00B0`;
-            if (syncCropper) applyEditorRotation();
+            if (syncEditor) scheduleStraightenRebuild();
         }
 
-        function applyEditorRotation() {
-            if (cropperInstance) cropperInstance.rotateTo(currentStraightenAngle);
+        function scheduleStraightenRebuild() {
+            if (!currentOriginalDataUrl) return;
+            clearTimeout(straightenReloadTimer);
+            straightenReloadTimer = setTimeout(() => {
+                pendingCropPoints = currentCropPoints ? cloneCropPoints(currentCropPoints) : null;
+                loadCropEditorForCurrentState({ restoreCropPoints: !!pendingCropPoints });
+            }, 90);
         }
 
-        function scheduleCropBoxRefit() {
-            window.requestAnimationFrame(() => {
-                window.requestAnimationFrame(fitCropBoxToVisibleCanvas);
+        function updateImageDisplayRect() {
+            const stage = document.getElementById('crop-stage');
+            const imageEl = document.getElementById('crop-image');
+            if (!imageEl.naturalWidth || !imageEl.naturalHeight) {
+                imageDisplayRect = null;
+                return;
+            }
+            const stageRect = stage.getBoundingClientRect();
+            const imageAspect = imageEl.naturalWidth / imageEl.naturalHeight;
+            const stageAspect = stageRect.width / stageRect.height;
+            let width;
+            let height;
+
+            if (imageAspect > stageAspect) {
+                width = stageRect.width;
+                height = width / imageAspect;
+            } else {
+                height = stageRect.height;
+                width = height * imageAspect;
+            }
+
+            imageDisplayRect = {
+                left: (stageRect.width - width) / 2,
+                top: (stageRect.height - height) / 2,
+                width,
+                height
+            };
+        }
+
+        function renderCropOverlay() {
+            const overlay = document.getElementById('crop-overlay');
+            if (!overlay) return;
+
+            const stage = document.getElementById('crop-stage');
+            const stageRect = stage.getBoundingClientRect();
+            overlay.setAttribute('viewBox', `0 0 ${stageRect.width || 1} ${stageRect.height || 1}`);
+
+            if (!currentCropPoints || !imageDisplayRect) {
+                overlay.innerHTML = '';
+                return;
+            }
+
+            const points = cropPointsToStage(currentCropPoints);
+            const handles = getCropHandles(points);
+            const path = [
+                `M0 0H${stageRect.width}V${stageRect.height}H0Z`,
+                `M${points.tl.x} ${points.tl.y}L${points.tr.x} ${points.tr.y}L${points.br.x} ${points.br.y}L${points.bl.x} ${points.bl.y}Z`
+            ].join('');
+
+            overlay.innerHTML = `
+                <path class="crop-mask" d="${path}"></path>
+                <polygon class="crop-outline" points="${points.tl.x},${points.tl.y} ${points.tr.x},${points.tr.y} ${points.br.x},${points.br.y} ${points.bl.x},${points.bl.y}"></polygon>
+            `;
+
+            handles.forEach((handle) => {
+                const group = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+                const hit = handle.type === 'corner'
+                    ? document.createElementNS('http://www.w3.org/2000/svg', 'circle')
+                    : document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+                const visible = handle.type === 'corner'
+                    ? document.createElementNS('http://www.w3.org/2000/svg', 'circle')
+                    : document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+
+                group.setAttribute('class', `crop-handle${activeCropHandle === handle.name ? ' crop-handle-active' : ''}`);
+                group.setAttribute('transform', `translate(${handle.x} ${handle.y}) rotate(${handle.angle || 0})`);
+                group.dataset.handle = handle.name;
+                group.addEventListener('pointerdown', startCropHandleDrag);
+
+                if (handle.type === 'corner') {
+                    visible.setAttribute('class', 'crop-handle-dot');
+                    visible.setAttribute('cx', '0');
+                    visible.setAttribute('cy', '0');
+                    visible.setAttribute('r', '7');
+
+                    hit.setAttribute('cx', '0');
+                    hit.setAttribute('cy', '0');
+                    hit.setAttribute('r', '25');
+                } else {
+                    visible.setAttribute('class', 'crop-edge-handle');
+                    visible.setAttribute('x', '-15');
+                    visible.setAttribute('y', '-4');
+                    visible.setAttribute('width', '30');
+                    visible.setAttribute('height', '8');
+                    visible.setAttribute('rx', '4');
+                    visible.setAttribute('ry', '4');
+
+                    hit.setAttribute('x', '-27');
+                    hit.setAttribute('y', '-22');
+                    hit.setAttribute('width', '54');
+                    hit.setAttribute('height', '44');
+                    hit.setAttribute('rx', '16');
+                    hit.setAttribute('ry', '16');
+                }
+
+                hit.setAttribute('class', 'crop-handle-hit');
+
+                group.appendChild(visible);
+                group.appendChild(hit);
+                overlay.appendChild(group);
             });
         }
 
-        function fitCropBoxToVisibleCanvas() {
-            if (!cropperInstance) return;
+        function startCropHandleDrag(event) {
+            if (!currentCropPoints || !imageDisplayRect) return;
+            event.preventDefault();
+            activeCropHandle = event.currentTarget.dataset.handle;
+            dragStartPoints = cloneCropPoints(currentCropPoints);
+            dragStartPointer = pointerEventToNormalizedPoint(event);
+            event.currentTarget.setPointerCapture(event.pointerId);
+            window.addEventListener('pointermove', moveCropHandle);
+            window.addEventListener('pointerup', stopCropHandleDrag, { once: true });
+            window.addEventListener('pointercancel', stopCropHandleDrag, { once: true });
+            renderCropOverlay();
+        }
 
-            const canvasData = cropperInstance.getCanvasData();
-            const containerData = cropperInstance.getContainerData();
-            const left = Math.max(canvasData.left, 0);
-            const top = Math.max(canvasData.top, 0);
-            const right = Math.min(canvasData.left + canvasData.width, containerData.width);
-            const bottom = Math.min(canvasData.top + canvasData.height, containerData.height);
-            const width = Math.max(right - left, 1);
-            const height = Math.max(bottom - top, 1);
+        function moveCropHandle(event) {
+            if (!activeCropHandle || !dragStartPoints || !dragStartPointer) return;
+            event.preventDefault();
+            const pointer = pointerEventToNormalizedPoint(event);
+            const nextPoints = cloneCropPoints(dragStartPoints);
 
-            cropperInstance.setCropBoxData({ left, top, width, height });
+            if (['tl', 'tr', 'br', 'bl'].includes(activeCropHandle)) {
+                nextPoints[activeCropHandle] = pointer;
+            } else {
+                moveCropEdge(nextPoints, pointer);
+            }
+
+            if (isValidCropPoints(nextPoints)) {
+                currentCropPoints = nextPoints;
+                renderCropOverlay();
+            }
+        }
+
+        function stopCropHandleDrag() {
+            activeCropHandle = null;
+            dragStartPoints = null;
+            dragStartPointer = null;
+            window.removeEventListener('pointermove', moveCropHandle);
+            window.removeEventListener('pointerup', stopCropHandleDrag);
+            window.removeEventListener('pointercancel', stopCropHandleDrag);
+            renderCropOverlay();
+        }
+
+        function moveCropEdge(points, pointer) {
+            const edges = {
+                top: ['tl', 'tr'],
+                right: ['tr', 'br'],
+                bottom: ['br', 'bl'],
+                left: ['bl', 'tl']
+            };
+            const edge = edges[activeCropHandle];
+            if (!edge) return;
+
+            const a = dragStartPoints[edge[0]];
+            const b = dragStartPoints[edge[1]];
+            const edgeVector = { x: b.x - a.x, y: b.y - a.y };
+            const length = Math.hypot(edgeVector.x, edgeVector.y) || 1;
+            const normal = { x: -edgeVector.y / length, y: edgeVector.x / length };
+            const delta = { x: pointer.x - dragStartPointer.x, y: pointer.y - dragStartPointer.y };
+            const distance = delta.x * normal.x + delta.y * normal.y;
+            const offset = { x: normal.x * distance, y: normal.y * distance };
+
+            edge.forEach((name) => {
+                points[name] = clampPoint({
+                    x: dragStartPoints[name].x + offset.x,
+                    y: dragStartPoints[name].y + offset.y
+                });
+            });
+        }
+
+        function pointerEventToNormalizedPoint(event) {
+            const stage = document.getElementById('crop-stage');
+            const stageRect = stage.getBoundingClientRect();
+            const x = (event.clientX - stageRect.left - imageDisplayRect.left) / imageDisplayRect.width;
+            const y = (event.clientY - stageRect.top - imageDisplayRect.top) / imageDisplayRect.height;
+            return clampPoint({ x, y });
+        }
+
+        function cropPointsToStage(points) {
+            return Object.fromEntries(Object.entries(points).map(([name, point]) => [
+                name,
+                {
+                    x: imageDisplayRect.left + point.x * imageDisplayRect.width,
+                    y: imageDisplayRect.top + point.y * imageDisplayRect.height
+                }
+            ]));
+        }
+
+        function getCropHandles(points) {
+            return [
+                { name: 'tl', type: 'corner', ...points.tl },
+                { name: 'tr', type: 'corner', ...points.tr },
+                { name: 'br', type: 'corner', ...points.br },
+                { name: 'bl', type: 'corner', ...points.bl },
+                { name: 'top', type: 'edge', angle: edgeAngle(points.tl, points.tr), ...midpoint(points.tl, points.tr) },
+                { name: 'right', type: 'edge', angle: edgeAngle(points.tr, points.br), ...midpoint(points.tr, points.br) },
+                { name: 'bottom', type: 'edge', angle: edgeAngle(points.br, points.bl), ...midpoint(points.br, points.bl) },
+                { name: 'left', type: 'edge', angle: edgeAngle(points.bl, points.tl), ...midpoint(points.bl, points.tl) }
+            ];
+        }
+
+        function midpoint(a, b) {
+            return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+        }
+
+        function edgeAngle(a, b) {
+            return Math.atan2(b.y - a.y, b.x - a.x) * 180 / Math.PI;
+        }
+
+        function defaultCropPoints() {
+            return {
+                tl: { x: 0, y: 0 },
+                tr: { x: 1, y: 0 },
+                br: { x: 1, y: 1 },
+                bl: { x: 0, y: 1 }
+            };
+        }
+
+        function sanitizeCropPoints(points) {
+            if (!points || !points.tl || !points.tr || !points.br || !points.bl) return null;
+            const sanitized = {
+                tl: clampPoint(points.tl),
+                tr: clampPoint(points.tr),
+                br: clampPoint(points.br),
+                bl: clampPoint(points.bl)
+            };
+            return isValidCropPoints(sanitized) ? sanitized : null;
+        }
+
+        function cloneCropPoints(points) {
+            return {
+                tl: { ...points.tl },
+                tr: { ...points.tr },
+                br: { ...points.br },
+                bl: { ...points.bl }
+            };
+        }
+
+        function clampPoint(point) {
+            return {
+                x: Math.max(0, Math.min(1, point.x)),
+                y: Math.max(0, Math.min(1, point.y))
+            };
+        }
+
+        function isValidCropPoints(points) {
+            const minArea = 0.01;
+            if (Math.abs(polygonArea([points.tl, points.tr, points.br, points.bl])) < minArea) return false;
+            if (segmentsIntersect(points.tl, points.tr, points.br, points.bl)) return false;
+            if (segmentsIntersect(points.tr, points.br, points.bl, points.tl)) return false;
+            return true;
+        }
+
+        function polygonArea(points) {
+            return points.reduce((sum, point, i) => {
+                const next = points[(i + 1) % points.length];
+                return sum + point.x * next.y - next.x * point.y;
+            }, 0) / 2;
+        }
+
+        function segmentsIntersect(a, b, c, d) {
+            const ccw = (p1, p2, p3) => (p3.y - p1.y) * (p2.x - p1.x) > (p2.y - p1.y) * (p3.x - p1.x);
+            return ccw(a, c, d) !== ccw(b, c, d) && ccw(a, b, c) !== ccw(a, b, d);
         }
 
         function normalizeRotateDegrees(value) {
@@ -641,24 +955,29 @@
             rotateBtn.classList.add('rotate-tap');
         }
 
-        function buildEditorSourceDataUrl(sourceDataUrl, rotateDegrees) {
+        function buildEditorSourceDataUrl(sourceDataUrl, rotateDegrees, straightenDegrees = 0) {
             const normalizedDegrees = normalizeRotateDegrees(rotateDegrees);
-            if (normalizedDegrees === 0) return Promise.resolve(sourceDataUrl);
+            const totalDegrees = normalizedDegrees + straightenDegrees;
 
             return new Promise((resolve, reject) => {
                 const img = new Image();
                 img.onload = () => {
                     const canvas = document.createElement('canvas');
-                    const quarterTurn = normalizedDegrees === 90 || normalizedDegrees === 270;
-                    canvas.width = quarterTurn ? img.height : img.width;
-                    canvas.height = quarterTurn ? img.width : img.height;
+                    const radians = (totalDegrees * Math.PI) / 180;
+                    const sin = Math.abs(Math.sin(radians));
+                    const cos = Math.abs(Math.cos(radians));
+                    const sourceScale = Math.min(1, MAX_IMAGE_SIZE / Math.max(img.width, img.height));
+                    const drawWidth = Math.round(img.width * sourceScale);
+                    const drawHeight = Math.round(img.height * sourceScale);
+                    canvas.width = Math.ceil(drawWidth * cos + drawHeight * sin);
+                    canvas.height = Math.ceil(drawWidth * sin + drawHeight * cos);
 
                     const ctx = canvas.getContext('2d');
                     ctx.fillStyle = "#fff";
                     ctx.fillRect(0, 0, canvas.width, canvas.height);
                     ctx.translate(canvas.width / 2, canvas.height / 2);
-                    ctx.rotate((normalizedDegrees * Math.PI) / 180);
-                    ctx.drawImage(img, -img.width / 2, -img.height / 2);
+                    ctx.rotate(radians);
+                    ctx.drawImage(img, -drawWidth / 2, -drawHeight / 2, drawWidth, drawHeight);
                     resolve(canvas.toDataURL('image/jpeg', 0.92));
                 };
                 img.onerror = reject;
@@ -675,6 +994,135 @@
             });
         }
 
+        function renderPerspectiveCrop(sourceDataUrl, points) {
+            return new Promise((resolve, reject) => {
+                const img = new Image();
+                img.onload = () => {
+                    try {
+                        const srcPoints = ['tl', 'tr', 'br', 'bl'].map((name) => ({
+                            x: points[name].x * img.width,
+                            y: points[name].y * img.height
+                        }));
+
+                        const topWidth = distance(srcPoints[0], srcPoints[1]);
+                        const bottomWidth = distance(srcPoints[3], srcPoints[2]);
+                        const leftHeight = distance(srcPoints[0], srcPoints[3]);
+                        const rightHeight = distance(srcPoints[1], srcPoints[2]);
+                        let outputWidth = Math.max(1, Math.round(Math.max(topWidth, bottomWidth)));
+                        let outputHeight = Math.max(1, Math.round(Math.max(leftHeight, rightHeight)));
+                        const scale = Math.min(1, MAX_IMAGE_SIZE / Math.max(outputWidth, outputHeight));
+                        outputWidth = Math.max(1, Math.round(outputWidth * scale));
+                        outputHeight = Math.max(1, Math.round(outputHeight * scale));
+
+                        const sourceCanvas = document.createElement('canvas');
+                        sourceCanvas.width = img.width;
+                        sourceCanvas.height = img.height;
+                        const sourceCtx = sourceCanvas.getContext('2d', { willReadFrequently: true });
+                        sourceCtx.drawImage(img, 0, 0);
+                        const sourceData = sourceCtx.getImageData(0, 0, sourceCanvas.width, sourceCanvas.height);
+
+                        const outputCanvas = document.createElement('canvas');
+                        outputCanvas.width = outputWidth;
+                        outputCanvas.height = outputHeight;
+                        const outputCtx = outputCanvas.getContext('2d');
+                        const outputData = outputCtx.createImageData(outputWidth, outputHeight);
+                        const matrix = perspectiveMatrix(
+                            [
+                                { x: 0, y: 0 },
+                                { x: outputWidth - 1, y: 0 },
+                                { x: outputWidth - 1, y: outputHeight - 1 },
+                                { x: 0, y: outputHeight - 1 }
+                            ],
+                            srcPoints
+                        );
+
+                        for (let y = 0; y < outputHeight; y++) {
+                            for (let x = 0; x < outputWidth; x++) {
+                                const sourcePoint = applyPerspective(matrix, x, y);
+                                copyBilinearPixel(sourceData, outputData, sourcePoint.x, sourcePoint.y, x, y);
+                            }
+                        }
+
+                        outputCtx.putImageData(outputData, 0, 0);
+                        resolve({ dataUrl: outputCanvas.toDataURL('image/jpeg', 0.9), w: outputWidth, h: outputHeight });
+                    } catch (error) {
+                        reject(error);
+                    }
+                };
+                img.onerror = reject;
+                img.src = sourceDataUrl;
+            });
+        }
+
+        function distance(a, b) {
+            return Math.hypot(b.x - a.x, b.y - a.y);
+        }
+
+        function perspectiveMatrix(fromPoints, toPoints) {
+            const rows = [];
+            for (let i = 0; i < 4; i++) {
+                const from = fromPoints[i];
+                const to = toPoints[i];
+                rows.push([from.x, from.y, 1, 0, 0, 0, -to.x * from.x, -to.x * from.y, to.x]);
+                rows.push([0, 0, 0, from.x, from.y, 1, -to.y * from.x, -to.y * from.y, to.y]);
+            }
+            const solved = solveLinearSystem(rows);
+            return [...solved, 1];
+        }
+
+        function solveLinearSystem(matrix) {
+            const size = 8;
+            for (let col = 0; col < size; col++) {
+                let pivot = col;
+                for (let row = col + 1; row < size; row++) {
+                    if (Math.abs(matrix[row][col]) > Math.abs(matrix[pivot][col])) pivot = row;
+                }
+                [matrix[col], matrix[pivot]] = [matrix[pivot], matrix[col]];
+
+                const divisor = matrix[col][col] || 1e-12;
+                for (let item = col; item <= size; item++) matrix[col][item] /= divisor;
+
+                for (let row = 0; row < size; row++) {
+                    if (row === col) continue;
+                    const factor = matrix[row][col];
+                    for (let item = col; item <= size; item++) matrix[row][item] -= factor * matrix[col][item];
+                }
+            }
+            return matrix.map((row) => row[size]);
+        }
+
+        function applyPerspective(matrix, x, y) {
+            const denominator = matrix[6] * x + matrix[7] * y + matrix[8];
+            return {
+                x: (matrix[0] * x + matrix[1] * y + matrix[2]) / denominator,
+                y: (matrix[3] * x + matrix[4] * y + matrix[5]) / denominator
+            };
+        }
+
+        function copyBilinearPixel(sourceData, outputData, sourceX, sourceY, outputX, outputY) {
+            const width = sourceData.width;
+            const height = sourceData.height;
+            const x = Math.max(0, Math.min(width - 1, sourceX));
+            const y = Math.max(0, Math.min(height - 1, sourceY));
+            const x0 = Math.floor(x);
+            const y0 = Math.floor(y);
+            const x1 = Math.min(width - 1, x0 + 1);
+            const y1 = Math.min(height - 1, y0 + 1);
+            const xWeight = x - x0;
+            const yWeight = y - y0;
+            const outIndex = (outputY * outputData.width + outputX) * 4;
+
+            for (let channel = 0; channel < 4; channel++) {
+                const topLeft = sourceData.data[(y0 * width + x0) * 4 + channel];
+                const topRight = sourceData.data[(y0 * width + x1) * 4 + channel];
+                const bottomLeft = sourceData.data[(y1 * width + x0) * 4 + channel];
+                const bottomRight = sourceData.data[(y1 * width + x1) * 4 + channel];
+                const top = topLeft + (topRight - topLeft) * xWeight;
+                const bottom = bottomLeft + (bottomRight - bottomLeft) * xWeight;
+                outputData.data[outIndex + channel] = top + (bottom - top) * yWeight;
+            }
+        }
+
         async function buildOriginalImageRecord(sourceDataUrl, originalName) {
             const rendered = await renderImageToJpeg(sourceDataUrl);
             return {
@@ -682,7 +1130,7 @@
                 originalDataUrl: sourceDataUrl,
                 originalName: originalName || '',
                 edit: {
-                    cropData: null,
+                    cropPoints: null,
                     straighten: 0,
                     rotateDegrees: 0
                 }
